@@ -207,7 +207,8 @@ function admit(directory, providerDirectory) {
   assert(fresh(publisher.observedAt), 'stale publisher admission');
   if (publisher.mode === 'bootstrap') {
     assert.equal(get('npm-whoami'), publisher.actor, 'bootstrap actor differs from admitted owner');
-    assert(['owner', 'admin'].includes(get('npm-org')[publisher.actor]), 'namespace ownership is unconfirmed');
+    if (publisher.actor !== packageName.slice(1).split('/')[0])
+      assert(['owner', 'admin'].includes(get('npm-org')[publisher.actor]), 'namespace ownership is unconfirmed');
   }
   const registry = get('registry');
   if (registry.statusCode === 200) {

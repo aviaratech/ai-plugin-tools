@@ -329,3 +329,53 @@ test('guarded single-publisher sequence never retries ambiguous or existing publ
     rmSync(f.root, { recursive: true });
   }
 });
+
+test('bootstrap personal scope requires the exact authenticated owner; other actors require organization proof', () => {
+  const cases = [
+    { actor: 'aviaratech', whoami: 'aviaratech', organization: undefined, accepted: true },
+    { actor: 'aviaratech', whoami: 'another-user', organization: undefined, accepted: false },
+    { actor: 'aviaratech', whoami: undefined, organization: undefined, accepted: false },
+    {
+      actor: 'aviaratech-other',
+      whoami: 'aviaratech-other',
+      organization: undefined,
+      accepted: false,
+    },
+    { actor: 'Aviaratech', whoami: 'Aviaratech', organization: undefined, accepted: false },
+    {
+      actor: 'another-user',
+      whoami: 'another-user',
+      organization: { 'another-user': 'developer' },
+      accepted: false,
+    },
+    {
+      actor: 'another-user',
+      whoami: 'another-user',
+      organization: { 'different-user': 'owner' },
+      accepted: false,
+    },
+    {
+      actor: 'another-user',
+      whoami: 'another-user',
+      organization: { 'another-user': 'admin' },
+      accepted: true,
+    },
+  ];
+  for (const item of cases) {
+    const f = fixture();
+    try {
+      const publisher = read(join(f.providers, 'publisher.json'));
+      publisher.actor = item.actor;
+      write(join(f.providers, 'publisher.json'), publisher);
+      if (item.whoami === undefined) rmSync(join(f.providers, 'npm-whoami.json'));
+      else write(join(f.providers, 'npm-whoami.json'), item.whoami);
+      if (item.organization === undefined) rmSync(join(f.providers, 'npm-org.json'));
+      else write(join(f.providers, 'npm-org.json'), item.organization);
+      const result = invoke(['admit', f.candidate, f.providers], f.env);
+      assert.equal(result.status === 0, item.accepted, JSON.stringify(item) + result.stderr);
+      assert.equal(result.stdout.trim() === 'publish-once', item.accepted);
+    } finally {
+      rmSync(f.root, { recursive: true });
+    }
+  }
+});
