@@ -133,13 +133,26 @@ function fixture() {
       },
     },
   });
-  write(join(providers, 'protection.json'), {
-    required_status_checks: { strict: true, contexts: ['checks', 'secrets'] },
-    required_pull_request_reviews: { required_approving_review_count: 1, dismiss_stale_reviews: true },
-    enforce_admins: { enabled: true },
-    required_linear_history: { enabled: true },
-    allow_force_pushes: { enabled: false },
-    allow_deletions: { enabled: false },
+  write(join(providers, 'branch.json'), { name: 'main', protected: true, commit: { sha } });
+  write(join(providers, 'ref-update-rule.json'), {
+    data: {
+      repository: {
+        nameWithOwner: producer.repository,
+        ref: {
+          name: 'main',
+          prefix: 'refs/heads/',
+          target: { oid: sha },
+          refUpdateRule: {
+            pattern: 'main',
+            requiredStatusCheckContexts: ['checks', 'secrets'],
+            requiredApprovingReviewCount: 1,
+            requiresLinearHistory: true,
+            allowsForcePushes: false,
+            allowsDeletions: false,
+          },
+        },
+      },
+    },
   });
   write(join(providers, 'checks.json'), {
     check_runs: ['checks', 'secrets'].map((name, i) => ({
@@ -265,7 +278,25 @@ test('admit rejects stale, author-only, dismissed, drifted and unknown provider 
     ['main.json', (x) => ({ ...x, sha: '0'.repeat(40) })],
     ['head.json', (x) => ({ ...x, tree: { sha: '0'.repeat(40) } })],
     ['checks.json', (x) => ({ check_runs: [{ ...x.check_runs[0], conclusion: 'failure' }] })],
-    ['protection.json', (x) => ({ ...x, enforce_admins: { enabled: false } })],
+    ['branch.json', (x) => ({ ...x, protected: false })],
+    ['branch.json', (x) => ({ ...x, commit: { sha: '0'.repeat(40) } })],
+    ['ref-update-rule.json', (x) => ({ ...x, errors: [{ message: 'denied' }] })],
+    ['ref-update-rule.json', () => ({ data: { repository: { ref: null } } })],
+    ...[
+      { requiredStatusCheckContexts: ['secrets'] },
+      { requiredStatusCheckContexts: null },
+      { requiredApprovingReviewCount: 0 },
+      { requiredApprovingReviewCount: '1' },
+      { requiresLinearHistory: false },
+      { allowsForcePushes: true },
+      { allowsDeletions: true },
+    ].map((change) => [
+      'ref-update-rule.json',
+      (x) => {
+        x.data.repository.ref.refUpdateRule = { ...x.data.repository.ref.refUpdateRule, ...change };
+        return x;
+      },
+    ]),
     ['registry.json', () => ({ statusCode: 401, body: {} })],
     ['registry.json', () => ({ statusCode: 200, body: { version: '0.1.0', dist: { integrity: 'conflict' } } })],
     ['publisher.json', (x) => ({ ...x, admitted: false })],
@@ -360,6 +391,112 @@ test('an otherwise valid publisher cannot substitute another saved trust configu
     write(join(f.providers, 'publisher.json'), publisher);
     const result = invoke(['admit', f.candidate, f.providers], f.env);
     assert.notEqual(result.status, 0, 'another nonempty configuration ID must not be admitted');
+  } finally {
+    rmSync(f.root, { recursive: true });
+  }
+});
+
+test('CI admission uses actual non-admin protection fields without fabricated administrative settings', () => {
+  const f = fixture();
+  try {
+    rmSync(join(f.providers, 'protection.json'), { force: true });
+    const result = invoke(['admit', f.candidate, f.providers], f.env);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), 'publish-once');
+  } finally {
+    rmSync(f.root, { recursive: true });
+  }
+});
+
+test('a failed protection read preserves independent diagnostics and fails collection overall', () => {
+  const f = fixture();
+  try {
+    const bin = join(f.root, 'bin');
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, 'gh'),
+      `#!${process.execPath}\n` +
+        String.raw`
+const fs=require('node:fs'),assert=require('node:assert/strict');
+const read=n=>JSON.parse(fs.readFileSync(process.env.PROVIDER_FIXTURE+'/'+n+'.json'));
+const [,endpoint,...args]=process.argv.slice(2);assert.equal(process.argv[2],'api');
+const repo='repos/aviaratech/ai-plugin-tools',main=read('main'),pr=read('pr');
+const failure=process.env.PROVIDER_FAILURE;
+if(endpoint===repo+'/pulls/2' && failure==='pr') {
+  process.stdout.write(JSON.stringify({message:'denied'}));process.exit(1);
+}
+let value;
+if(endpoint==='graphql') {
+  const query=args.find(x=>x.startsWith('query='));assert(query);
+  if(query.includes('branchProtectionRule')) throw Error('unavailable administrative query');
+  if(query.includes('refUpdateRule')) {
+    if(failure==='ref-update-rule') {
+      process.stdout.write(JSON.stringify({data:{repository:{ref:{refUpdateRule:null}}},errors:[{type:'FORBIDDEN',message:'denied'}]}));process.exit(1);
+    }
+    value=read('ref-update-rule');
+  }
+  else if(query.includes('reviewDecision')) value=read('review-decision');
+  else {assert(query.includes('PullRequestReview'));value=read('app-review-eligibility');}
+} else {
+  const values={
+    [repo+'/commits/main']:main,
+    [repo+'/branches/main']:read('branch'),
+    [repo+'/commits/'+main.sha+'/pulls']:[{...pr,merged_at:'2026-01-01T00:00:00Z'}],
+    [repo+'/pulls/2']:pr,
+    [repo+'/git/commits/'+pr.head.sha]:read('head'),
+    [repo+'/pulls/2/reviews?per_page=100']:[read('reviews')],
+    [repo+'/commits/'+main.sha+'/check-runs?per_page=100']:[read('checks')],
+    [repo+'/issues/1']:read('issue'),
+    [repo+'/actions/artifacts?name=publish-intent-0.1.0&per_page=100']:[{artifacts:[]}],
+  };assert(Object.hasOwn(values,endpoint),'unexpected API request '+endpoint);value=values[endpoint];
+}
+process.stdout.write(JSON.stringify(value));
+`,
+      { mode: 0o700 },
+    );
+    writeFileSync(
+      join(bin, 'curl'),
+      `#!${process.execPath}\n` +
+        String.raw`
+const fs=require('node:fs'),assert=require('node:assert/strict'),args=process.argv.slice(2);
+const url=args.at(-1),root='https://registry.npmjs.org/@aviaratech%2fai-plugin-tools';
+assert(url===root||url===root+'/0.1.0');
+const name=url===root?'package-registry':'registry';
+const value=JSON.parse(fs.readFileSync(process.env.PROVIDER_FIXTURE+'/'+name+'.json'));
+fs.writeFileSync(args[args.indexOf('--output')+1],JSON.stringify(value.body));process.stdout.write(String(value.statusCode));
+`,
+      { mode: 0o700 },
+    );
+    for (const failure of ['none', 'ref-update-rule', 'pr']) {
+      const collected = join(f.root, 'collected-' + failure);
+      const result = spawnSync('bash', [resolve('scripts/release-provider.sh'), collected], {
+        env: { ...f.env, PATH: bin + ':' + process.env.PATH, PROVIDER_FIXTURE: f.providers, PROVIDER_FAILURE: failure },
+        encoding: 'utf8',
+      });
+      assert.equal(result.status === 0, failure === 'none', 'collector outcome: ' + failure + result.stderr);
+      for (const name of ['checks', 'issue', 'publication-history', 'package-registry', 'registry'])
+        assert(existsSync(join(collected, name + '.json')), 'independent read was hidden: ' + name + result.stderr);
+      const statuses = readFileSync(join(collected, 'collection-status.jsonl'), 'utf8')
+        .trim()
+        .split('\n')
+        .map(JSON.parse);
+      const requests = statuses.filter((x) => x.kind === 'request');
+      assert.equal(new Set(requests.map((x) => x.name)).size, requests.length, 'a request must not be retried');
+      assert(requests.some((x) => x.name === 'issue' && x.exitCode === 0));
+      assert(!existsSync(join(collected, 'publisher.json')), 'collection must not invent publisher admission');
+      if (failure === 'none') {
+        write(join(collected, 'publisher.json'), read(join(f.providers, 'publisher.json')));
+        const admitted = invoke(['admit', f.candidate, collected], f.env);
+        assert.equal(admitted.status, 0, admitted.stderr);
+        assert.equal(admitted.stdout.trim(), 'publish-once');
+      } else {
+        assert(requests.some((x) => x.name === failure && x.exitCode === 1));
+        if (failure === 'pr') {
+          assert(requests.some((x) => x.name === 'head' && x.status === 'skipped'));
+          assert(!existsSync(join(collected, 'head.json')), 'dependent read must be skipped');
+        }
+      }
+    }
   } finally {
     rmSync(f.root, { recursive: true });
   }

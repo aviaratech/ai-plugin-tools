@@ -57,6 +57,25 @@ required approval. App-directory access is not an available Actions-token proof.
 The live review establishes the configured Bot's approval; it does not independently
 attest the App-directory mapping.
 
+Before BOTH guarded merge and release dispatch, the owner must actually obtain,
+assert, retain and independently inspect fresh original full classic protection
+evidence through the existing maintained host-author context. Bind its true
+observation time and actor/context to this repository, main and the exact candidate
+and current main source. Require strict checks with the named contexts, approval
+count, stale dismissal, administrator enforcement, linear history, and disabled
+force pushes/deletions. Missing, denied, malformed, stale or changed evidence
+stops that action. The maintained controller's preflight alone does not establish
+every setting. Keep this owner evidence separate; never replay it as a CI response.
+
+CI reads current branch metadata and the supported non-admin `Ref.refUpdateRule`:
+required check contexts, approval count, linear history and force/deletion flags.
+The guard also checks exact current-main, merged PR, counted head-bound review,
+source/tree/archive identity and actual required checks. CI cannot independently
+detect drift in strict status checks, stale dismissal or administrator enforcement
+between the owner observation and publication. Fresh owner inspection reduces,
+but does not eliminate, that interval. Do not fabricate unavailable fields or add
+privileged CI credentials to obtain them.
+
 The release workflow is manual on main. Its source, archive digest and CI-run
 inputs must identify the same accepted candidate. The release environment must
 be restricted to main before dispatch. publisher_admission is a credential-free
@@ -88,6 +107,11 @@ independent review must inspect every request, including GraphQL errors/nulls an
 complete review/protection bindings. The observation identifies the executing
 collector commit/tree/digest separately from the main source whose records were
 collected. Never relabel existing-main observations as new-source qualification.
+Each independent request runs once. Preserve its original stdout/stderr and
+command/validation status in `collection-status.jsonl`; skip only reads whose
+prerequisites are unavailable. Continue independent diagnostics after a failure,
+then return nonzero if any required read or validation failed. Admission, intent
+retention and publication must not follow failed or incomplete collection.
 
 First ownership is established separately through an explicitly approved local
 browser-authenticated CLI publication of the real library at `0.0.0`, tagged

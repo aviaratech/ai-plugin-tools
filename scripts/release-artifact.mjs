@@ -181,16 +181,31 @@ function admit(directory, providerDirectory) {
   assert.equal(eligibility.pullRequest.headRefOid, head.sha, 'App review PR head drifted');
   assert.equal(eligibility.pullRequest.baseRepository.nameWithOwner, repository, 'App review repository mismatch');
   assert.equal(eligibility.authorCanPushToRepository, true, 'configured App approval does not count');
-  const protection = get('protection');
-  assert.equal(protection.required_status_checks.strict, true, 'strict checks required');
-  const contexts = protection.required_status_checks.contexts;
+  const branch = get('branch');
+  assert.equal(branch.name, 'main', 'wrong protected branch');
+  assert.equal(branch.protected, true, 'main protection is absent');
+  assert.equal(branch.commit.sha, p.sourceSha, 'protected branch source drifted');
+  const rules = get('ref-update-rule');
+  assert.equal(rules.errors ?? null, null, 'protection read contains GraphQL errors');
+  assert.equal(rules.data.repository.nameWithOwner, repository, 'wrong protection repository');
+  const ref = rules.data.repository.ref;
+  assert.equal(ref.name, 'main', 'wrong protection ref');
+  assert.equal(ref.prefix, 'refs/heads/', 'wrong protection ref namespace');
+  assert.equal(ref.target.oid, p.sourceSha, 'protection ref source drifted');
+  const protection = ref.refUpdateRule;
+  assert(typeof protection.pattern === 'string' && protection.pattern.length > 0, 'protection rule is absent');
+  const contexts = protection.requiredStatusCheckContexts;
+  assert(Array.isArray(contexts) && contexts.every((x) => typeof x === 'string'), 'invalid required checks');
   assert(contexts.includes('checks') && contexts.includes('secrets'), 'required checks changed');
-  assert(protection.required_pull_request_reviews.required_approving_review_count >= 1, 'counted approval required');
-  assert.equal(protection.required_pull_request_reviews.dismiss_stale_reviews, true, 'stale dismissal required');
-  assert.equal(protection.enforce_admins.enabled, true, 'admin enforcement required');
-  assert.equal(protection.required_linear_history.enabled, true, 'linear history required');
-  assert.equal(protection.allow_force_pushes.enabled, false, 'force push forbidden');
-  assert.equal(protection.allow_deletions.enabled, false, 'protected deletion forbidden');
+  assert(
+    Number.isSafeInteger(protection.requiredApprovingReviewCount) && protection.requiredApprovingReviewCount >= 1,
+    'counted approval required',
+  );
+  assert.equal(protection.requiresLinearHistory, true, 'linear history required');
+  assert.equal(protection.allowsForcePushes, false, 'force push forbidden');
+  assert.equal(protection.allowsDeletions, false, 'protected deletion forbidden');
+  // Strict checks, stale dismissal and admin enforcement are mandatory fresh
+  // owner gates before merge and dispatch; this non-admin view cannot prove them.
   const checks = get('checks').check_runs;
   for (const name of contexts) {
     const runs = checks.filter((check) => check.name === name).sort((a, b) => b.id - a.id);
