@@ -135,7 +135,10 @@ jobs:
             test -n "$NODE_AUTH_TOKEN"
             npm whoami --json > "$RUNNER_TEMP/provider/npm-whoami.json"
             actor="$(node -p "const fs=require('node:fs');const p=require(process.env.RUNNER_TEMP+'/provider/publisher.json');const actor=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+'/provider/npm-whoami.json','utf8'));if(actor!==p.actor)throw new Error('publisher actor mismatch');actor")"
-            npm org ls aviaratech --json -- "$actor" > "$RUNNER_TEMP/provider/npm-org.json"
+            scope="$(node -p "require('./package.json').name.split('/')[0].slice(1)")"
+            if test "$actor" != "$scope"; then
+              npm org ls "$scope" --json -- "$actor" > "$RUNNER_TEMP/provider/npm-org.json"
+            fi
           fi
       - name: Admit the exact archive once
         id: admission

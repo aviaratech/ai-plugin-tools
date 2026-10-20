@@ -57,7 +57,10 @@ be restricted to main before dispatch. publisher_admission is a credential-free
 record of the actually admitted package, repository, workflow, environment,
 actor and mode, with admitted=true and a fresh observedAt. It grants no access.
 Bootstrap mode additionally checks the configured NPM_BOOTSTRAP_TOKEN's actual
-npm identity and namespace owner/admin readback. This secret reference is a
+npm identity against the admitted actor. An authenticated actor exactly matching
+the canonical package scope owns that personal namespace. Every other actor
+requires organization owner/admin readback; unknown or insufficient evidence
+refuses publication. This secret reference is a
 proposed repository binding; creating or changing it requires admission of the
 supported first-publisher route. An existing HTTP 401 is a stopped access gate,
 never permission to substitute credentials or another account. OIDC cannot
