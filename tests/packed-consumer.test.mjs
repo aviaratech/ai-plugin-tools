@@ -45,21 +45,63 @@ async function run(executable, args, cwd, signal) {
   const owned = new Map();
   const observe = () => {
     for (const item of processes(child.pid)) owned.set(item.pid, item.birth);
+    atomic(
+      join(cwd, 'children.json'),
+      [...owned].map(([pid, birth]) => ({ pid, birth, group: child.pid })),
+    );
   };
   let stdout = '';
   let stderr = '';
   let overflow = false;
-  const stop = () => {
+  let outputBytes = 0;
+  let stopping = false;
+  let killTimer;
+  let signalFailure;
+  let rejectCancellation;
+  const cancellationFailure = new Promise((_accept, reject) => {
+    rejectCancellation = reject;
+  });
+  const signalOwned = (name) => {
     observe();
-    if (processes(child.pid).length) process.kill(-child.pid, 'SIGTERM');
+    for (const item of processes(child.pid).reverse()) {
+      assert.equal(owned.get(item.pid), item.birth, 'child process identity changed');
+      try {
+        process.kill(item.pid, name);
+      } catch (error) {
+        // A snapshot can race process exit. A live refusal remains an error.
+        const stillOwned = processes(child.pid).some((now) => now.pid === item.pid && now.birth === item.birth);
+        if (error.code !== 'ESRCH' && stillOwned) throw error;
+      }
+    }
+  };
+  const stop = () => {
+    if (stopping) return;
+    stopping = true;
+    try {
+      signalOwned('SIGTERM');
+    } catch (error) {
+      signalFailure = error;
+      rejectCancellation(error);
+      return;
+    }
+    killTimer ??= setTimeout(() => {
+      try {
+        signalOwned('SIGKILL');
+      } catch (error) {
+        signalFailure = error;
+        rejectCancellation(error);
+      }
+    }, 5_000); // Cleanup grace for an owned child that ignores termination.
   };
   const collect = (kind, chunk) => {
-    if (kind === 'out') stdout += chunk;
-    else stderr += chunk;
-    if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) > 32 * 1024 ** 2) {
+    outputBytes += chunk.length;
+    if (outputBytes > 32 * 1024 ** 2) {
       overflow = true;
       stop();
+      return;
     }
+    if (kind === 'out') stdout += chunk;
+    else stderr += chunk;
   };
   child.stdout.on('data', (chunk) => collect('out', chunk));
   child.stderr.on('data', (chunk) => collect('err', chunk));
@@ -73,9 +115,10 @@ async function run(executable, args, cwd, signal) {
   if (signal?.aborted) stop();
   let code;
   try {
-    code = await closed;
+    code = await Promise.race([closed, cancellationFailure]);
   } finally {
     clearInterval(monitor);
+    clearTimeout(killTimer);
     signal?.removeEventListener('abort', stop);
     const remaining = processes(child.pid);
     assert(
@@ -83,11 +126,12 @@ async function run(executable, args, cwd, signal) {
       'child process identity changed',
     );
     if (remaining.length) {
-      process.kill(-child.pid, 'SIGTERM');
+      if (signalFailure) throw signalFailure;
+      signalOwned('SIGTERM');
       for (let i = 0; i < 100 && processes(child.pid).length; i++) await delay(50);
       if (processes(child.pid).length) {
         assert(processes(child.pid).every((item) => owned.get(item.pid) === item.birth));
-        process.kill(-child.pid, 'SIGKILL');
+        signalOwned('SIGKILL');
       }
       for (let i = 0; i < 100 && processes(child.pid).length; i++) await delay(50);
     }
@@ -112,6 +156,14 @@ function removeRoot(owner) {
   const stat = lstatSync(owner.root);
   assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.dev === owner.device && stat.ino === owner.inode);
   assert.deepEqual(json(join(owner.root, 'owner.json')), owner);
+  if (existsSync(join(owner.root, 'children.json'))) {
+    for (const child of json(join(owner.root, 'children.json'))) {
+      assert(
+        !processes(child.group).some((now) => now.pid === child.pid && now.birth === child.birth),
+        'preserve install root while owned child is active',
+      );
+    }
+  }
   rmSync(owner.root, { recursive: true });
   assert(!existsSync(owner.root), 'owned install cleanup failed');
 }
@@ -368,7 +420,7 @@ test('failure and cancellation drain owned children and preserve unrelated files
       process.execPath,
       [
         '-e',
-        "const {spawn}=require('node:child_process'); const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'inherit'}); process.on('SIGTERM',()=>{child.kill(); child.on('exit',()=>process.exit(0))}); setInterval(()=>{},1000);",
+        "const {spawn}=require('node:child_process'); spawn(process.execPath,['-e',\"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)\"],{stdio:'inherit'});process.on('SIGTERM',()=>{});setInterval(()=>{},1000);",
       ],
       owner.root,
       abort.signal,

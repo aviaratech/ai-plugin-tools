@@ -25,6 +25,11 @@ checkout dependency may resolve in the production install. Successful runtime
 receipts are reusable only with identical source, lock, archive, consumer and
 runtime identities. Preserve receipts and archives on failure.
 
+An early consumer.json is a reusable completed package unit, not proof that the
+enclosing refusal/recovery/cleanup tests passed. execution.json records that
+command's actual exit status joined to the same identity. Release selection
+requires both and refuses absent or failed execution evidence.
+
 Required CI contexts are checks and secrets. Changes require fresh
 consequential exact-head independent review and GitHub-counted approval through
 the configured reviewer App, distinct from the PR author. Preserve strict

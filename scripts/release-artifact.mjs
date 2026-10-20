@@ -86,10 +86,14 @@ function validate(directory) {
   assert.equal(manifest.bin, undefined, 'CLI forbidden');
   for (const version of versions) {
     const root = join(directory, version);
-    assert.deepEqual(readdirSync(root), ['consumer.json'], 'unexpected consumer evidence');
+    assert.deepEqual(readdirSync(root).sort(), ['consumer.json', 'execution.json'], 'unexpected consumer evidence');
     assert(!lstatSync(join(root, 'consumer.json')).isSymbolicLink(), 'consumer receipt symlink');
+    assert(!lstatSync(join(root, 'execution.json')).isSymbolicLink(), 'consumer execution symlink');
     const receipt = json(join(root, 'consumer.json'));
     const identity = receipt.identity;
+    const execution = json(join(root, 'execution.json'));
+    assert.equal(execution.exitCode, 0, 'enclosing consumer command failed');
+    assert.deepEqual(execution.identity, identity, 'consumer command identity mismatch');
     assert.equal(receipt.passed, true, 'consumer failed');
     assert.equal(receipt.cleanup.complete, true, 'consumer cleanup unconfirmed');
     assert.equal(identity.schemaVersion, 1, 'consumer schema mismatch');

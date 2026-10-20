@@ -90,6 +90,10 @@ function fixture() {
       passed: true,
       cleanup: { complete: true, root: '/synthetic/removed' },
     });
+    write(join(directory, 'execution.json'), {
+      identity: read(join(directory, 'consumer.json')).identity,
+      exitCode: 0,
+    });
   }
   write(join(providers, 'observation.json'), { repository: producer.repository, observedAt: new Date().toISOString() });
   write(join(providers, 'main.json'), { sha, commit: { tree: { sha: tree } } });
@@ -176,6 +180,12 @@ test('release artifact refuses unaccepted candidates', () => {
     (f) => writeFileSync(join(f.candidate, f.producer.archiveName), 'corrupt'),
     (f) => writeFileSync(join(f.candidate, 'source-lock.json'), 'changed'),
     (f) => rmSync(join(f.candidate, '24.0.0/consumer.json')),
+    (f) => rmSync(join(f.candidate, '24.21.0/execution.json')),
+    (f) => {
+      const p = read(join(f.candidate, '24.21.0/execution.json'));
+      p.exitCode = 1;
+      write(join(f.candidate, '24.21.0/execution.json'), p);
+    },
     (f) => {
       const p = read(join(f.candidate, '26.2.0/consumer.json'));
       p.cleanup.complete = false;

@@ -56,6 +56,7 @@ jobs:
             gh run download "$QUALIFICATION_RUN" --repo aviaratech/ai-plugin-tools --name "consumer-$version" --dir "$RUNNER_TEMP/consumer-$version"
             mkdir "$RUNNER_TEMP/candidate/$version"
             cp "$RUNNER_TEMP/consumer-$version/consumer.json" "$RUNNER_TEMP/candidate/$version/consumer.json"
+            cp "$RUNNER_TEMP/consumer-$version/execution.json" "$RUNNER_TEMP/candidate/$version/execution.json"
           done
           node scripts/release-artifact.mjs select "$RUNNER_TEMP/candidate" "$RUNNER_TEMP/selected"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
