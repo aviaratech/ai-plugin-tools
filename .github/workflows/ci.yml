@@ -146,9 +146,34 @@ jobs:
     if: always()
     needs: [secrets, producer, consumer]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      pull-requests: read
+      issues: read
     steps:
       - name: Require all runtime and source gates
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           node -e "const n=JSON.parse(process.env.RESULTS); if(!Object.values(n).every(x=>x.result==='success')) process.exit(1)"
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.21.0
+      - name: Collect provider records with the actual CI token
+        id: provider
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEWER_BOT_ID: '249028089'
+        run: bash scripts/release-provider.sh "$RUNNER_TEMP/provider"
+      - name: Preserve original collection evidence
+        if: always() && steps.provider.outcome != 'skipped'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: provider-preflight
+          path: ${{ runner.temp }}/provider
+          if-no-files-found: error

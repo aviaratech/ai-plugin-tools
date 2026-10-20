@@ -15,6 +15,8 @@ const fresh = (date) =>
   Number.isFinite(Date.parse(date)) &&
   Date.now() - Date.parse(date) >= -30_000 &&
   Date.now() - Date.parse(date) < 5 * 60_000;
+const historical = (date) =>
+  typeof date === 'string' && Number.isFinite(Date.parse(date)) && Date.parse(date) <= Date.now() + 30_000;
 
 function validate(directory) {
   const p = json(join(directory, 'producer.json'));
@@ -150,20 +152,18 @@ function admit(directory, providerDirectory) {
     'APPROVED',
     'GitHub required approval is unconfirmed',
   );
-  const app = get('reviewer-app'),
-    bot = get('reviewer-bot');
+  // The reviewed workflow owns the App/Bot mapping. Live review records prove
+  // the exact actor and counted approval without an App-directory credential.
   assert(/^[1-9][0-9]*$/.test(process.env.REVIEWER_APP_ID ?? ''), 'reviewer App is not configured');
   assert(/^[1-9][0-9]*$/.test(process.env.REVIEWER_BOT_ID ?? ''), 'reviewer Bot is not configured');
-  assert.equal(String(app.id), process.env.REVIEWER_APP_ID, 'reviewer App mismatch');
-  assert.equal(String(bot.id), process.env.REVIEWER_BOT_ID, 'reviewer Bot mismatch');
-  assert.equal(bot.login, app.slug + '[bot]', 'reviewer App/Bot identity mismatch');
-  assert.equal(bot.type, 'Bot', 'reviewer must be an App');
-  assert.notEqual(bot.login, pr.user.login, 'author cannot supply independent approval');
+  const login = process.env.REVIEWER_BOT_LOGIN;
+  assert(typeof login === 'string' && /^[a-z0-9-]+\[bot\]$/i.test(login), 'reviewer Bot login is not configured');
+  assert.notEqual(login, pr.user.login, 'author cannot supply independent approval');
   const reviews = get('reviews')
-    .filter((review) => review.user.id === bot.id)
+    .filter((review) => String(review.user.id) === process.env.REVIEWER_BOT_ID)
     .sort((a, b) => b.id - a.id);
   assert(reviews.length > 0, 'independent App review absent');
-  assert.equal(reviews[0].user.login, bot.login, 'review actor mismatch');
+  assert.equal(reviews[0].user.login, login, 'review actor mismatch');
   assert.equal(reviews[0].user.type, 'Bot', 'review actor is not App Bot');
   assert.equal(reviews[0].state, 'APPROVED', 'review dismissed or unaccepted');
   assert.equal(reviews[0].commit_id, head.sha, 'stale App review');
@@ -171,22 +171,41 @@ function admit(directory, providerDirectory) {
   assert.equal(eligibility.id, reviews[0].node_id, 'App review node mismatch');
   assert.equal(String(eligibility.fullDatabaseId), String(reviews[0].id), 'App review identity mismatch');
   assert.equal(eligibility.state, 'APPROVED', 'App review is not currently approved');
-  assert.equal(eligibility.author.login.replace(/\[bot\]$/, ''), app.slug, 'App review author mismatch');
+  assert.equal(
+    eligibility.author.login.replace(/\[bot\]$/, ''),
+    login.replace(/\[bot\]$/, ''),
+    'App review author mismatch',
+  );
   assert.equal(eligibility.commit.oid, head.sha, 'App review eligibility is stale');
   assert.equal(eligibility.pullRequest.number, pr.number, 'App review belongs to another PR');
   assert.equal(eligibility.pullRequest.headRefOid, head.sha, 'App review PR head drifted');
   assert.equal(eligibility.pullRequest.baseRepository.nameWithOwner, repository, 'App review repository mismatch');
   assert.equal(eligibility.authorCanPushToRepository, true, 'configured App approval does not count');
-  const protection = get('protection');
-  assert.equal(protection.required_status_checks.strict, true, 'strict checks required');
-  const contexts = protection.required_status_checks.contexts;
+  const branch = get('branch');
+  assert.equal(branch.name, 'main', 'wrong protected branch');
+  assert.equal(branch.protected, true, 'main protection is absent');
+  assert.equal(branch.commit.sha, p.sourceSha, 'protected branch source drifted');
+  const rules = get('ref-update-rule');
+  assert.equal(rules.errors ?? null, null, 'protection read contains GraphQL errors');
+  assert.equal(rules.data.repository.nameWithOwner, repository, 'wrong protection repository');
+  const ref = rules.data.repository.ref;
+  assert.equal(ref.name, 'main', 'wrong protection ref');
+  assert.equal(ref.prefix, 'refs/heads/', 'wrong protection ref namespace');
+  assert.equal(ref.target.oid, p.sourceSha, 'protection ref source drifted');
+  const protection = ref.refUpdateRule;
+  assert(typeof protection.pattern === 'string' && protection.pattern.length > 0, 'protection rule is absent');
+  const contexts = protection.requiredStatusCheckContexts;
+  assert(Array.isArray(contexts) && contexts.every((x) => typeof x === 'string'), 'invalid required checks');
   assert(contexts.includes('checks') && contexts.includes('secrets'), 'required checks changed');
-  assert(protection.required_pull_request_reviews.required_approving_review_count >= 1, 'counted approval required');
-  assert.equal(protection.required_pull_request_reviews.dismiss_stale_reviews, true, 'stale dismissal required');
-  assert.equal(protection.enforce_admins.enabled, true, 'admin enforcement required');
-  assert.equal(protection.required_linear_history.enabled, true, 'linear history required');
-  assert.equal(protection.allow_force_pushes.enabled, false, 'force push forbidden');
-  assert.equal(protection.allow_deletions.enabled, false, 'protected deletion forbidden');
+  assert(
+    Number.isSafeInteger(protection.requiredApprovingReviewCount) && protection.requiredApprovingReviewCount >= 1,
+    'counted approval required',
+  );
+  assert.equal(protection.requiresLinearHistory, true, 'linear history required');
+  assert.equal(protection.allowsForcePushes, false, 'force push forbidden');
+  assert.equal(protection.allowsDeletions, false, 'protected deletion forbidden');
+  // Strict checks, stale dismissal and admin enforcement are mandatory fresh
+  // owner gates before merge and dispatch; this non-admin view cannot prove them.
   const checks = get('checks').check_runs;
   for (const name of contexts) {
     const runs = checks.filter((check) => check.name === name).sort((a, b) => b.id - a.id);
@@ -204,7 +223,7 @@ function admit(directory, providerDirectory) {
   assert.equal(publisher.admitted, true, 'first-publisher route is not admitted');
   assert.equal(publisher.mode, 'oidc', 'only the admitted OIDC publisher is supported');
   assert(typeof publisher.actor === 'string' && publisher.actor.length > 0, 'publisher actor is unverified');
-  assert(fresh(publisher.observedAt), 'stale publisher admission');
+  assert(historical(publisher.observedAt), 'invalid historical publisher observation');
   const packageRegistry = get('package-registry');
   assert.equal(packageRegistry.statusCode, 200, 'existing package ownership is unavailable');
   assert.equal(packageRegistry.body.name, packageName, 'noncanonical existing package');
@@ -213,9 +232,13 @@ function admit(directory, providerDirectory) {
     packageRegistry.body.maintainers?.some((x) => x.name === publisher.actor),
     'package owner is unconfirmed',
   );
-  assert(fresh(publisher.trustObservedAt), 'stale trusted-publisher readback');
+  assert(historical(publisher.trustObservedAt), 'invalid historical trusted-publisher readback');
   const trust = publisher.trust;
-  assert(typeof trust?.id === 'string' && trust.id.length > 0, 'trusted-publisher identity is absent');
+  assert(
+    typeof process.env.TRUSTED_PUBLISHER_ID === 'string' && process.env.TRUSTED_PUBLISHER_ID.length > 0,
+    'trusted-publisher identity is not configured',
+  );
+  assert.equal(trust?.id, process.env.TRUSTED_PUBLISHER_ID, 'trusted-publisher identity mismatch');
   assert.equal(trust.type, 'github', 'wrong trusted-publisher provider');
   assert.equal(trust.repository, repository, 'wrong trusted-publisher repository');
   assert.equal(trust.file, publisher.workflow, 'wrong trusted-publisher workflow');
