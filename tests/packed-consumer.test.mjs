@@ -211,7 +211,7 @@ async function consume(archive, results, expectedNode, producer, signal) {
       script,
       [
         "import assert from 'node:assert/strict';",
-        "import { createRequire } from 'node:module';",
+        "import { fileURLToPath } from 'node:url';",
         "import { realpathSync } from 'node:fs';",
         "const mod = await import('@aviaratech/ai-plugin-tools');",
         "assert.deepEqual(Object.keys(mod).sort(), ['marketplaceDocuments','nativePluginArgs']);",
@@ -220,7 +220,7 @@ async function consume(archive, results, expectedNode, producer, signal) {
         "const pair=mod.marketplaceDocuments({marketplaceName:'',pluginName:'',relativeSource:'',version:'',ownerName:'',metadata});",
         "assert.deepEqual(Object.keys(pair), ['codexDocument','claudeDocument']);",
         "assert.equal(pair.codexDocument.plugins[0].source.path,''); }",
-        "const resolved=createRequire(import.meta.url).resolve('@aviaratech/ai-plugin-tools');",
+        "const resolved=fileURLToPath(import.meta.resolve('@aviaratech/ai-plugin-tools'));",
         'assert(realpathSync(resolved).startsWith(' + JSON.stringify(packageRoot + '/') + '));',
       ].join('\n'),
     );
