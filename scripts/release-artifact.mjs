@@ -202,14 +202,28 @@ function admit(directory, providerDirectory) {
   assert.equal(publisher.workflow, 'release.yml', 'wrong publisher workflow');
   assert.equal(publisher.environment, 'release', 'wrong protected environment');
   assert.equal(publisher.admitted, true, 'first-publisher route is not admitted');
-  assert(['bootstrap', 'oidc'].includes(publisher.mode), 'unsupported publisher route');
+  assert.equal(publisher.mode, 'oidc', 'only the admitted OIDC publisher is supported');
   assert(typeof publisher.actor === 'string' && publisher.actor.length > 0, 'publisher actor is unverified');
   assert(fresh(publisher.observedAt), 'stale publisher admission');
-  if (publisher.mode === 'bootstrap') {
-    assert.equal(get('npm-whoami'), publisher.actor, 'bootstrap actor differs from admitted owner');
-    if (publisher.actor !== packageName.slice(1).split('/')[0])
-      assert(['owner', 'admin'].includes(get('npm-org')[publisher.actor]), 'namespace ownership is unconfirmed');
-  }
+  const packageRegistry = get('package-registry');
+  assert.equal(packageRegistry.statusCode, 200, 'existing package ownership is unavailable');
+  assert.equal(packageRegistry.body.name, packageName, 'noncanonical existing package');
+  assert.equal(publisher.actor, packageName.slice(1).split('/')[0], 'unadmitted namespace owner');
+  assert(
+    packageRegistry.body.maintainers?.some((x) => x.name === publisher.actor),
+    'package owner is unconfirmed',
+  );
+  assert(fresh(publisher.trustObservedAt), 'stale trusted-publisher readback');
+  const trust = publisher.trust;
+  assert(typeof trust?.id === 'string' && trust.id.length > 0, 'trusted-publisher identity is absent');
+  assert.equal(trust.type, 'github', 'wrong trusted-publisher provider');
+  assert.equal(trust.repository, repository, 'wrong trusted-publisher repository');
+  assert.equal(trust.file, publisher.workflow, 'wrong trusted-publisher workflow');
+  assert.equal(trust.environment, publisher.environment, 'wrong trusted-publisher environment');
+  assert(
+    Array.isArray(trust.permissions) && trust.permissions.includes('createPackage'),
+    'trusted publisher cannot publish directly',
+  );
   const registry = get('registry');
   if (registry.statusCode === 200) {
     assert.equal(registry.body.name, packageName, 'registry package conflict');
@@ -225,7 +239,6 @@ function admit(directory, providerDirectory) {
   }
   assert.equal(registry.statusCode, 404, 'registry state unavailable or unauthorized');
   assert(['E404', 'Not found'].includes(registry.body.error), 'registry absence unconfirmed');
-  assert.equal(publisher.mode, 'bootstrap', 'initial package ownership cannot be bootstrapped with OIDC');
   assert.equal(get('issue').state, 'open', 'initial release issue is not open');
   assert.deepEqual(
     get('publication-history').intents,

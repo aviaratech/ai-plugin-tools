@@ -153,8 +153,10 @@ function fixture() {
   });
   write(join(providers, 'registry.json'), { statusCode: 404, body: { error: 'E404' } });
   write(join(providers, 'publication-history.json'), { intents: [] });
-  write(join(providers, 'npm-whoami.json'), 'synthetic-owner');
-  write(join(providers, 'npm-org.json'), { 'synthetic-owner': 'owner' });
+  write(join(providers, 'package-registry.json'), {
+    statusCode: 200,
+    body: { name: manifest.name, maintainers: [{ name: 'aviaratech' }] },
+  });
   write(join(providers, 'issue.json'), { state: 'open' });
   write(join(providers, 'publisher.json'), {
     package: manifest.name,
@@ -162,8 +164,17 @@ function fixture() {
     workflow: 'release.yml',
     environment: 'release',
     admitted: true,
-    mode: 'bootstrap',
-    actor: 'synthetic-owner',
+    mode: 'oidc',
+    actor: 'aviaratech',
+    trustObservedAt: new Date().toISOString(),
+    trust: {
+      id: 'trusted-config',
+      type: 'github',
+      repository: producer.repository,
+      file: 'release.yml',
+      environment: 'release',
+      permissions: ['createPackage'],
+    },
     observedAt: new Date().toISOString(),
   });
   const env = { ...environment(), REVIEWED_ARCHIVE_SHA256: producer.archiveSHA256 };
@@ -330,49 +341,49 @@ test('guarded single-publisher sequence never retries ambiguous or existing publ
   }
 });
 
-test('bootstrap personal scope requires the exact authenticated owner; other actors require organization proof', () => {
+test('OIDC admits an absent target only for an existing owned package and exact admitted trust', () => {
   const cases = [
-    { actor: 'aviaratech', whoami: 'aviaratech', organization: undefined, accepted: true },
-    { actor: 'aviaratech', whoami: 'another-user', organization: undefined, accepted: false },
-    { actor: 'aviaratech', whoami: undefined, organization: undefined, accepted: false },
-    {
-      actor: 'aviaratech-other',
-      whoami: 'aviaratech-other',
-      organization: undefined,
+    { accepted: true, mutate: () => {} },
+    ...[401, 403, 404].map((statusCode) => ({
       accepted: false,
-    },
-    { actor: 'Aviaratech', whoami: 'Aviaratech', organization: undefined, accepted: false },
-    {
-      actor: 'another-user',
-      whoami: 'another-user',
-      organization: { 'another-user': 'developer' },
+      mutate: (f) => write(join(f.providers, 'package-registry.json'), { statusCode, body: {} }),
+    })),
+    ...[
+      (x) => ({ ...x, body: { ...x.body, name: '@other/ai-plugin-tools' } }),
+      (x) => ({ ...x, body: { ...x.body, maintainers: [] } }),
+      (x) => ({ ...x, body: { ...x.body, maintainers: [{ name: 'other-owner' }] } }),
+    ].map((change) => ({
       accepted: false,
-    },
-    {
-      actor: 'another-user',
-      whoami: 'another-user',
-      organization: { 'different-user': 'owner' },
+      mutate: (f) =>
+        write(join(f.providers, 'package-registry.json'), change(read(join(f.providers, 'package-registry.json')))),
+    })),
+    ...[
+      (x) => ({ ...x, mode: 'bootstrap' }),
+      (x) => ({ ...x, actor: 'other-owner' }),
+      (x) => ({ ...x, trust: undefined }),
+      (x) => ({ ...x, trustObservedAt: '2000-01-01T00:00:00Z' }),
+      (x) => ({ ...x, observedAt: '2000-01-01T00:00:00Z' }),
+      ...[
+        { id: '' },
+        { type: 'gitlab' },
+        { repository: 'other/repository' },
+        { file: 'other.yml' },
+        { environment: 'other' },
+        { permissions: ['createStagedPackage'] },
+        { permissions: 'createPackage' },
+      ].map((change) => (x) => ({ ...x, trust: { ...x.trust, ...change } })),
+    ].map((change) => ({
       accepted: false,
-    },
-    {
-      actor: 'another-user',
-      whoami: 'another-user',
-      organization: { 'another-user': 'admin' },
-      accepted: true,
-    },
+      mutate: (f) => write(join(f.providers, 'publisher.json'), change(read(join(f.providers, 'publisher.json')))),
+    })),
+    { accepted: false, mutate: (f) => rmSync(join(f.providers, 'package-registry.json')) },
   ];
-  for (const item of cases) {
+  for (const [index, item] of cases.entries()) {
     const f = fixture();
     try {
-      const publisher = read(join(f.providers, 'publisher.json'));
-      publisher.actor = item.actor;
-      write(join(f.providers, 'publisher.json'), publisher);
-      if (item.whoami === undefined) rmSync(join(f.providers, 'npm-whoami.json'));
-      else write(join(f.providers, 'npm-whoami.json'), item.whoami);
-      if (item.organization === undefined) rmSync(join(f.providers, 'npm-org.json'));
-      else write(join(f.providers, 'npm-org.json'), item.organization);
+      item.mutate(f);
       const result = invoke(['admit', f.candidate, f.providers], f.env);
-      assert.equal(result.status === 0, item.accepted, JSON.stringify(item) + result.stderr);
+      assert.equal(result.status === 0, item.accepted, 'case ' + index + result.stderr);
       assert.equal(result.stdout.trim() === 'publish-once', item.accepted);
     } finally {
       rmSync(f.root, { recursive: true });

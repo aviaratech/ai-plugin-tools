@@ -81,7 +81,6 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: 24.21.0
-          registry-url: https://registry.npmjs.org/
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         with:
           name: selected-release
@@ -120,26 +119,16 @@ jobs:
           gh api repos/aviaratech/ai-plugin-tools/issues/1 > issue.json
           gh api 'repos/aviaratech/ai-plugin-tools/actions/artifacts?name=publish-intent-0.1.0&per_page=100' --paginate --slurp |
             jq '{intents:[.[]|.artifacts[]]}' > publication-history.json
+          code="$(curl --silent --show-error --connect-timeout 15 --output package-body.json --write-out '%{http_code}' https://registry.npmjs.org/@aviaratech%2fai-plugin-tools)"
+          jq --argjson status "$code" '{statusCode:$status,body:.}' package-body.json > package-registry.json
           code="$(curl --silent --show-error --connect-timeout 15 --output registry-body.json --write-out '%{http_code}' https://registry.npmjs.org/@aviaratech%2fai-plugin-tools/0.1.0)"
           jq --argjson status "$code" '{statusCode:$status,body:.}' registry-body.json > registry.json
-      - name: Validate the admitted bootstrap identity
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
+      - name: Validate the publishing toolchain
         shell: bash
         run: |
           set -euo pipefail
           test "$(node --version)" = v24.21.0
           test "$(npm --version)" = 11.19.0
-          mode="$(node -p "require(process.env.RUNNER_TEMP+'/provider/publisher.json').mode")"
-          if test "$mode" = bootstrap; then
-            test -n "$NODE_AUTH_TOKEN"
-            npm whoami --json > "$RUNNER_TEMP/provider/npm-whoami.json"
-            actor="$(node -p "const fs=require('node:fs');const p=require(process.env.RUNNER_TEMP+'/provider/publisher.json');const actor=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+'/provider/npm-whoami.json','utf8'));if(actor!==p.actor)throw new Error('publisher actor mismatch');actor")"
-            scope="$(node -p "require('./package.json').name.split('/')[0].slice(1)")"
-            if test "$actor" != "$scope"; then
-              npm org ls "$scope" --json -- "$actor" > "$RUNNER_TEMP/provider/npm-org.json"
-            fi
-          fi
       - name: Admit the exact archive once
         id: admission
         shell: bash
@@ -162,8 +151,9 @@ jobs:
       - name: Publish once
         if: steps.admission.outputs.decision == 'publish-once'
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
-        run: npm publish "$RUNNER_TEMP/selected/aviaratech-ai-plugin-tools-0.1.0.tgz" --access public --provenance --ignore-scripts
+          NPM_CONFIG_USERCONFIG: /dev/null
+          NPM_CONFIG_GLOBALCONFIG: /dev/null
+        run: npm publish "$RUNNER_TEMP/selected/aviaratech-ai-plugin-tools-0.1.0.tgz" --registry=https://registry.npmjs.org/ --access public --provenance --ignore-scripts
       - name: Preserve admission evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
