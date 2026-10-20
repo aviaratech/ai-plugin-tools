@@ -69,7 +69,6 @@ jobs:
     runs-on: ubuntu-latest
     environment: release
     env:
-      NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/npm-oidc-user.npmrc
       NPM_CONFIG_GLOBALCONFIG: /dev/null
     permissions:
       contents: read
@@ -78,6 +77,11 @@ jobs:
       pull-requests: read
       id-token: write
     steps:
+      - name: Initialize isolated npm configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "NPM_CONFIG_USERCONFIG=$RUNNER_TEMP/npm-oidc-user.npmrc" >> "$GITHUB_ENV"
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           persist-credentials: false

@@ -395,12 +395,38 @@ test('publish workflow environment loads npm config before retaining an intent',
   const root = mkdtempSync(join(tmpdir(), 'ai-plugin-tools-npm-config-'));
   try {
     const workflow = readFileSync(resolve('.github/workflows/release.yml'), 'utf8').split('\n  publish:\n')[1];
-    const env = { PATH: process.env.PATH, NPM_CONFIG_CACHE: join(root, 'cache') };
-    for (const key of ['NPM_CONFIG_USERCONFIG', 'NPM_CONFIG_GLOBALCONFIG']) {
-      const matches = [...workflow.matchAll(new RegExp('^ +' + key + ': (.+)$', 'gm'))];
-      assert.equal(matches.length, 1, 'publish config must have one unambiguous value');
-      env[key] = matches[0][1].replaceAll('${{ runner.temp }}', root);
-    }
+    const [job, steps] = workflow.split('    steps:\n');
+    const jobEnvironment = job.match(/^    env:\n((?:      .*\n)+)/m)?.[1];
+    assert(jobEnvironment, 'publish job must declare its global npm config');
+    assert.doesNotMatch(jobEnvironment, /\$\{\{\s*runner\b/, 'runner context is unavailable in job-level env');
+    const globals = [...jobEnvironment.matchAll(/^      NPM_CONFIG_GLOBALCONFIG: (.+)$/gm)];
+    assert.equal(globals.length, 1, 'publish global config must have one unambiguous value');
+    const initializer = steps.match(
+      /^      - name: Initialize isolated npm configuration\n        shell: bash\n        run: \|\n((?:          .*\n)+)/,
+    );
+    assert(initializer, 'isolated npm config must initialize before other publish steps');
+    const environmentFile = join(root, 'github-env');
+    const initialize = spawnSync(
+      'bash',
+      ['--noprofile', '--norc', '-e', '-o', 'pipefail', '-c', initializer[1].replace(/^          /gm, '')],
+      {
+        cwd: root,
+        env: { PATH: process.env.PATH, RUNNER_TEMP: root, GITHUB_ENV: environmentFile },
+        encoding: 'utf8',
+      },
+    );
+    assert.equal(initialize.status, 0, initialize.stderr);
+    const exported = readFileSync(environmentFile, 'utf8').trim().split('\n');
+    assert.equal(exported.length, 1, 'initializer must emit exactly one npm user config');
+    assert(exported[0].startsWith('NPM_CONFIG_USERCONFIG='));
+    const env = {
+      PATH: process.env.PATH,
+      NPM_CONFIG_CACHE: join(root, 'cache'),
+      NPM_CONFIG_USERCONFIG: exported[0].slice('NPM_CONFIG_USERCONFIG='.length),
+      NPM_CONFIG_GLOBALCONFIG: globals[0][1],
+    };
+    assert.equal(env.NPM_CONFIG_USERCONFIG, join(root, 'npm-oidc-user.npmrc'));
+    assert.notEqual(env.NPM_CONFIG_USERCONFIG, env.NPM_CONFIG_GLOBALCONFIG);
     const result = spawnSync('npm', ['config', 'get', 'registry', '--logs-max=0'], {
       cwd: root,
       env,
