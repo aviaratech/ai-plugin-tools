@@ -98,6 +98,7 @@ function fixture() {
   write(join(providers, 'observation.json'), { repository: producer.repository, observedAt: new Date().toISOString() });
   write(join(providers, 'main.json'), { sha, commit: { tree: { sha: tree } } });
   write(join(providers, 'pr.json'), {
+    number: 2,
     merged: true,
     merge_commit_sha: sha,
     base: { ref: 'main', repo: { full_name: producer.repository } },
@@ -109,8 +110,27 @@ function fixture() {
     data: { repository: { pullRequest: { reviewDecision: 'APPROVED' } } },
   });
   write(join(providers, 'reviews.json'), [
-    { id: 1, state: 'APPROVED', commit_id: head, user: { id: 202, login: 'independent-review[bot]', type: 'Bot' } },
+    {
+      id: 1,
+      node_id: 'review-node',
+      state: 'APPROVED',
+      commit_id: head,
+      user: { id: 202, login: 'independent-review[bot]', type: 'Bot' },
+    },
   ]);
+  write(join(providers, 'app-review-eligibility.json'), {
+    data: {
+      node: {
+        id: 'review-node',
+        fullDatabaseId: 1,
+        state: 'APPROVED',
+        authorCanPushToRepository: true,
+        author: { login: 'independent-review' },
+        commit: { oid: head },
+        pullRequest: { number: 2, headRefOid: head, baseRepository: { nameWithOwner: producer.repository } },
+      },
+    },
+  });
   write(join(providers, 'reviewer-app.json'), { id: 101, slug: 'independent-review' });
   write(join(providers, 'reviewer-bot.json'), { id: 202, login: 'independent-review[bot]', type: 'Bot' });
   write(join(providers, 'protection.json'), {
@@ -219,6 +239,13 @@ test('admit rejects stale, author-only, dismissed, drifted and unknown provider 
     ['reviews.json', () => []],
     ['reviews.json', (x) => [{ ...x[0], user: { ...x[0].user, login: 'operator' } }]],
     ['reviews.json', (x) => [{ ...x[0], state: 'DISMISSED' }]],
+    ['app-review-eligibility.json', (x) => ({ data: { node: { ...x.data.node, authorCanPushToRepository: false } } })],
+    ['app-review-eligibility.json', (x) => ({ data: { node: { ...x.data.node, authorCanPushToRepository: null } } })],
+    ['app-review-eligibility.json', (x) => ({ data: { node: { ...x.data.node, fullDatabaseId: 99 } } })],
+    [
+      'app-review-eligibility.json',
+      (x) => ({ data: { node: { ...x.data.node, pullRequest: { ...x.data.node.pullRequest, number: 3 } } } }),
+    ],
     ['main.json', (x) => ({ ...x, sha: '0'.repeat(40) })],
     ['head.json', (x) => ({ ...x, tree: { sha: '0'.repeat(40) } })],
     ['checks.json', (x) => ({ check_runs: [{ ...x.check_runs[0], conclusion: 'failure' }] })],
@@ -239,6 +266,23 @@ test('admit rejects stale, author-only, dismissed, drifted and unknown provider 
     } finally {
       rmSync(f.root, { recursive: true });
     }
+  }
+});
+
+test('another maintainer approval cannot make the configured App approval count', () => {
+  const f = fixture();
+  try {
+    const eligibility = read(join(f.providers, 'app-review-eligibility.json'));
+    eligibility.data.node.authorCanPushToRepository = false;
+    write(join(f.providers, 'app-review-eligibility.json'), eligibility);
+    const reviews = read(join(f.providers, 'reviews.json'));
+    reviews.push({ id: 2, state: 'APPROVED', commit_id: head, user: { id: 303, login: 'maintainer', type: 'User' } });
+    write(join(f.providers, 'reviews.json'), reviews);
+    const result = invoke(['admit', f.candidate, f.providers], f.env);
+    assert.notEqual(result.status, 0, 'aggregate APPROVED cannot substitute for counted App eligibility');
+    assert.match(result.stderr, /configured App approval does not count/);
+  } finally {
+    rmSync(f.root, { recursive: true });
   }
 });
 

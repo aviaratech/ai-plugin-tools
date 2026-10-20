@@ -167,6 +167,16 @@ function admit(directory, providerDirectory) {
   assert.equal(reviews[0].user.type, 'Bot', 'review actor is not App Bot');
   assert.equal(reviews[0].state, 'APPROVED', 'review dismissed or unaccepted');
   assert.equal(reviews[0].commit_id, head.sha, 'stale App review');
+  const eligibility = get('app-review-eligibility').data.node;
+  assert.equal(eligibility.id, reviews[0].node_id, 'App review node mismatch');
+  assert.equal(String(eligibility.fullDatabaseId), String(reviews[0].id), 'App review identity mismatch');
+  assert.equal(eligibility.state, 'APPROVED', 'App review is not currently approved');
+  assert.equal(eligibility.author.login.replace(/\[bot\]$/, ''), app.slug, 'App review author mismatch');
+  assert.equal(eligibility.commit.oid, head.sha, 'App review eligibility is stale');
+  assert.equal(eligibility.pullRequest.number, pr.number, 'App review belongs to another PR');
+  assert.equal(eligibility.pullRequest.headRefOid, head.sha, 'App review PR head drifted');
+  assert.equal(eligibility.pullRequest.baseRepository.nameWithOwner, repository, 'App review repository mismatch');
+  assert.equal(eligibility.authorCanPushToRepository, true, 'configured App approval does not count');
   const protection = get('protection');
   assert.equal(protection.required_status_checks.strict, true, 'strict checks required');
   const contexts = protection.required_status_checks.contexts;

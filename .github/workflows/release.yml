@@ -107,6 +107,8 @@ jobs:
           gh api graphql -f query='query($n:Int!){repository(owner:"aviaratech",name:"ai-plugin-tools"){pullRequest(number:$n){reviewDecision}}}' -F n="$pr" > review-decision.json
           gh api apps/at-gpt-reviewer > reviewer-app.json
           gh api 'users/at-gpt-reviewer[bot]' > reviewer-bot.json
+          review="$(jq --slurpfile bot reviewer-bot.json '[.[] | select(.user.id == $bot[0].id)] | sort_by(.id) | last | .node_id // error("configured App review absent")' reviews.json -r)"
+          gh api graphql -f query='query($id:ID!){node(id:$id){...on PullRequestReview{id fullDatabaseId state authorCanPushToRepository author{login} commit{oid} pullRequest{number headRefOid baseRepository{nameWithOwner}}}}}' -f id="$review" > app-review-eligibility.json
           gh api graphql -f query='query{repository(owner:"aviaratech",name:"ai-plugin-tools"){ref(qualifiedName:"refs/heads/main"){branchProtectionRule{requiresStatusChecks requiresStrictStatusChecks requiredStatusCheckContexts requiresApprovingReviews requiredApprovingReviewCount dismissesStaleReviews isAdminEnforced requiresLinearHistory allowsForcePushes allowsDeletions}}}}' > protection-raw.json
           jq '.data.repository.ref.branchProtectionRule | {
             required_status_checks:(if .requiresStatusChecks then {strict:.requiresStrictStatusChecks,contexts:.requiredStatusCheckContexts} else null end),

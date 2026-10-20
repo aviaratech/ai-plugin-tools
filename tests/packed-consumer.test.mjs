@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import {
   existsSync,
   lstatSync,
@@ -13,7 +13,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { join, resolve, dirname, relative, isAbsolute } from 'node:path';
+import { join, resolve, dirname, basename, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -143,29 +143,75 @@ async function run(executable, args, cwd, signal) {
   return { stdout, stderr };
 }
 
+function processBirth(pid) {
+  assert(Number.isSafeInteger(pid) && pid > 0, 'invalid process identity');
+  const result = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8' });
+  if (result.status === 1 && result.stderr.trim() === '') return undefined;
+  assert.equal(result.status, 0, 'process identity is unavailable');
+  assert(result.stdout.trim(), 'empty process identity');
+  return result.stdout.trim();
+}
+function rootLocation(results, owner) {
+  assert.equal(dirname(owner.root), results, 'install root escaped its results directory');
+  assert(basename(owner.root).startsWith('install-'), 'unexpected install root');
+}
+function reconcileRoots(results) {
+  const pointer = join(results, 'active-root.json');
+  let active;
+  if (existsSync(pointer)) {
+    assert(lstatSync(pointer).isFile() && !lstatSync(pointer).isSymbolicLink(), 'invalid active root pointer');
+    active = json(pointer);
+    rootLocation(results, active);
+  }
+  for (const entry of readdirSync(results).filter((name) => name.startsWith('install-'))) {
+    const root = join(results, entry);
+    const marker = join(root, 'owner.json');
+    assert(lstatSync(root).isDirectory() && !lstatSync(root).isSymbolicLink(), 'invalid prior install root');
+    assert(lstatSync(marker).isFile() && !lstatSync(marker).isSymbolicLink(), 'invalid prior owner marker');
+    const owner = json(marker);
+    rootLocation(results, owner);
+    assert.equal(owner.root, root, 'prior owner root mismatch');
+    if (active?.root === root) assert.deepEqual(active, owner, 'prior owner pointer mismatch');
+    assert(owner.controller?.birth, 'prior controller identity unavailable');
+    assert.notEqual(processBirth(owner.controller.pid), owner.controller.birth, 'prior install controller is active');
+    removeRoot(owner);
+  }
+  if (active && existsSync(pointer)) {
+    assert(!existsSync(active.root), 'prior install remains');
+    assert.deepEqual(json(pointer), active, 'active root pointer changed');
+    rmSync(pointer);
+  }
+}
 function ownRoot(results) {
+  reconcileRoots(results);
+  const controller = { pid: process.pid, birth: processBirth(process.pid) };
   const root = mkdtempSync(join(results, 'install-'));
   const stat = lstatSync(root);
-  const owner = { root, device: stat.dev, inode: stat.ino, nonce: randomUUID() };
+  const owner = { root, device: stat.dev, inode: stat.ino, nonce: randomUUID(), controller };
   atomic(join(root, 'owner.json'), owner);
   atomic(join(results, 'active-root.json'), owner);
   return owner;
 }
 function removeRoot(owner) {
+  if (owner.controller?.pid !== process.pid)
+    assert.notEqual(processBirth(owner.controller.pid), owner.controller.birth, 'prior install controller is active');
+  else assert.equal(processBirth(process.pid), owner.controller.birth, 'controller identity changed');
   if (!existsSync(owner.root)) return;
   const stat = lstatSync(owner.root);
   assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.dev === owner.device && stat.ino === owner.inode);
   assert.deepEqual(json(join(owner.root, 'owner.json')), owner);
   if (existsSync(join(owner.root, 'children.json'))) {
     for (const child of json(join(owner.root, 'children.json'))) {
-      assert(
-        !processes(child.group).some((now) => now.pid === child.pid && now.birth === child.birth),
-        'preserve install root while owned child is active',
-      );
+      assert.equal(processes(child.group).length, 0, 'preserve install root while child group is active');
     }
   }
   rmSync(owner.root, { recursive: true });
   assert(!existsSync(owner.root), 'owned install cleanup failed');
+  const pointer = join(dirname(owner.root), 'active-root.json');
+  if (existsSync(pointer) && json(pointer).nonce === owner.nonce) {
+    assert.deepEqual(json(pointer), owner, 'active root pointer changed');
+    rmSync(pointer);
+  }
 }
 const inventory = (root) => readdirSync(root, { recursive: true }).map(String).sort();
 
@@ -189,6 +235,7 @@ async function consume(archive, results, expectedNode, producer, signal) {
   };
   assert.equal(identity.archiveSHA256, producer.archiveSHA256, 'archive integrity changed');
   assert.equal('sha512-' + createHash('sha512').update(bytes).digest('base64'), producer.archiveIntegrity);
+  reconcileRoots(results);
   const receipt = join(results, 'consumer.json');
   if (existsSync(receipt)) {
     const prior = json(receipt);
@@ -197,10 +244,6 @@ async function consume(archive, results, expectedNode, producer, signal) {
     assert.equal(prior.cleanup.complete, true);
     assert(!existsSync(prior.cleanup.root));
     return { reused: true, receipt: prior };
-  }
-  if (existsSync(join(results, 'active-root.json'))) {
-    const stale = json(join(results, 'active-root.json'));
-    assert(!existsSync(stale.root), 'prior install requires identity-safe recovery before retry');
   }
   const owner = ownRoot(results);
   let failure;
@@ -311,6 +354,12 @@ async function consume(archive, results, expectedNode, producer, signal) {
   return { reused: false, receipt: completed };
 }
 
+// Exercise an untrappable interruption in the real owner path before test registration.
+if (process.env.AI_PLUGIN_TOOLS_INTERRUPTION_PROBE === '1') {
+  ownRoot(process.env.AI_PLUGIN_TOOLS_RESULTS);
+  process.kill(process.pid, 'SIGKILL');
+}
+
 test('actual packed archive supports the declared runtime and production types', async () => {
   const archive = process.env.AI_PLUGIN_TOOLS_ARCHIVE;
   const results = process.env.AI_PLUGIN_TOOLS_RESULTS;
@@ -335,6 +384,45 @@ test('actual packed archive supports the declared runtime and production types',
   }
   if (expected === 'v24.21.0') {
     const original = readFileSync(join(results, 'consumer.json'));
+    let abandoned;
+    try {
+      assert.throws(
+        () =>
+          execFileSync(process.execPath, [fileURLToPath(import.meta.url)], {
+            env: { ...cleanEnv(), AI_PLUGIN_TOOLS_INTERRUPTION_PROBE: '1' },
+            stdio: 'pipe',
+          }),
+        (error) => error.signal === 'SIGKILL',
+      );
+      abandoned = json(join(results, 'active-root.json'));
+      assert(existsSync(abandoned.root), 'interruption must leave an owned root');
+      assert.equal((await consume(archive, results, expected, producer)).reused, true);
+      assert(!existsSync(abandoned.root), 'resume must reconcile the abandoned root before receipt reuse');
+      assert.deepEqual(readFileSync(join(results, 'consumer.json')), original, 'completed checkpoint must be reused');
+    } finally {
+      if (abandoned && existsSync(abandoned.root)) removeRoot(abandoned);
+    }
+    assert.throws(
+      () =>
+        execFileSync(process.execPath, [fileURLToPath(import.meta.url)], {
+          env: { ...cleanEnv(), AI_PLUGIN_TOOLS_INTERRUPTION_PROBE: '1' },
+          stdio: 'pipe',
+        }),
+      (error) => error.signal === 'SIGKILL',
+    );
+    const unindexed = json(join(results, 'active-root.json'));
+    rmSync(join(results, 'active-root.json'));
+    const replacement = ownRoot(results);
+    try {
+      assert(!existsSync(unindexed.root), 'owner creation must reconcile an unindexed abandoned root');
+      const pointer = readFileSync(join(results, 'active-root.json'));
+      await assert.rejects(consume(archive, results, expected, producer), /prior install controller is active/);
+      assert.throws(() => ownRoot(results), /prior install controller is active/);
+      assert.deepEqual(readFileSync(join(results, 'active-root.json')), pointer, 'live owner pointer must survive');
+      assert(existsSync(replacement.root), 'live owner root must survive');
+    } finally {
+      removeRoot(replacement);
+    }
     const interrupted = join(results, 'interrupted');
     const abort = new AbortController();
     const pending = consume(archive, interrupted, expected, producer, abort.signal);
