@@ -56,16 +56,36 @@ inputs must identify the same accepted candidate. The release environment must
 be restricted to main before dispatch. publisher_admission is a credential-free
 record of the actually admitted package, repository, workflow, environment,
 actor and mode, with admitted=true and a fresh observedAt. It grants no access.
-Bootstrap mode additionally checks the configured NPM_BOOTSTRAP_TOKEN's actual
-npm identity against the admitted actor. An authenticated actor exactly matching
-the canonical package scope owns that personal namespace. Every other actor
-requires organization owner/admin readback; unknown or insufficient evidence
-refuses publication. This secret reference is a
-proposed repository binding; creating or changing it requires admission of the
-supported first-publisher route. An existing HTTP 401 is a stopped access gate,
-never permission to substitute credentials or another account. OIDC cannot
-bootstrap a nonexistent npm package. Its subsequent trust binding is a separate
-read-back transition after initial ownership exists.
+Only OIDC mode is accepted. The provider evidence contains separate canonical
+package-root and target-version responses: an absent target version does not
+mean package ownership is absent. The root response must identify this package
+and the admitted personal namespace owner `aviaratech` among its maintainers.
+The admission also carries the actual `npm trust list --json` record as `trust`
+and its fresh `trustObservedAt`: a nonempty configuration ID, GitHub provider,
+repository, `release.yml`, `release` environment and `createPackage` permission
+must match. This credential-free readback is admission evidence; actual OIDC
+publishing still proves access. No npm account token or GitHub npm secret is
+used by the release workflow, and an OIDC refusal has no credential fallback.
+
+First ownership is established separately through an explicitly approved local
+browser-authenticated CLI publication of the real library at `0.0.0`, tagged
+`bootstrap`. This extra immutable version requires exact archive approval,
+including its version-only derivation and bootstrap-only absence of CI
+provenance. Use an isolated temporary account userconfig/cache outside source
+and evidence, with standard npm web login and publish approval. Never change
+the shared userconfig or copy credentials into GitHub. Publish the verified
+archive from an exclusively owned neutral temporary path containing only public
+package/version names: npm can include that path in registry metadata. Revoke
+the temporary session and separately verify owned local cleanup.
+
+After ownership exists, configure and read back the package-specific GitHub
+trusted publisher for this repository, `release.yml`, environment `release`,
+with direct publishing allowed. Save its actual CLI readback in the admission;
+that CLI does not expose provider creation or expiry times. Complete the real
+`0.1.0` OIDC release within npm's two-day activation window: saving trust alone
+is not successful activation. An existing HTTP 401/403 stops its context; it
+never authorizes another account, token, retry or additional package version.
+The stable release retains every qualified-archive and CI provenance check.
 
 An intent artifact is retained before the single publish command. Any prior
 intent with an absent registry version stops publication for original-run
