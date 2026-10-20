@@ -238,7 +238,10 @@ function admit(directory, providerDirectory) {
     return 'readback-only';
   }
   assert.equal(registry.statusCode, 404, 'registry state unavailable or unauthorized');
-  assert(['E404', 'Not found'].includes(registry.body.error), 'registry absence unconfirmed');
+  assert(
+    registry.body === `version not found: ${p.version}` || ['E404', 'Not found'].includes(registry.body?.error),
+    'registry absence unconfirmed',
+  );
   assert.equal(get('issue').state, 'open', 'initial release issue is not open');
   assert.deepEqual(
     get('publication-history').intents,

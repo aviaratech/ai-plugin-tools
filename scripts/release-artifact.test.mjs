@@ -391,6 +391,30 @@ test('OIDC admits an absent target only for an existing owned package and exact 
   }
 });
 
+test('admit recognizes exact target-version absence and refuses other registry responses', () => {
+  const cases = [
+    { name: 'actual npm missing-version response', statusCode: 404, body: 'version not found: 0.1.0', accepted: true },
+    { name: 'another version', statusCode: 404, body: 'version not found: 0.2.0', accepted: false },
+    { name: 'unknown message', statusCode: 404, body: 'Not Found', accepted: false },
+    { name: 'empty body', statusCode: 404, body: null, accepted: false },
+    { name: 'unknown object', statusCode: 404, body: { error: 'unavailable' }, accepted: false },
+    { name: 'unauthenticated', statusCode: 401, body: 'version not found: 0.1.0', accepted: false },
+    { name: 'forbidden', statusCode: 403, body: 'version not found: 0.1.0', accepted: false },
+    { name: 'provider failure', statusCode: 500, body: 'version not found: 0.1.0', accepted: false },
+  ];
+  for (const { name, statusCode, body, accepted } of cases) {
+    const f = fixture();
+    try {
+      write(join(f.providers, 'registry.json'), { statusCode, body });
+      const result = invoke(['admit', f.candidate, f.providers], f.env);
+      assert.equal(result.status === 0, accepted, name + ': ' + result.stderr);
+      assert.equal(result.stdout.trim() === 'publish-once', accepted, name);
+    } finally {
+      rmSync(f.root, { recursive: true });
+    }
+  }
+});
+
 test('publish workflow environment loads npm config before retaining an intent', () => {
   const root = mkdtempSync(join(tmpdir(), 'ai-plugin-tools-npm-config-'));
   try {
