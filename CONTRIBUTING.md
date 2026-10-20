@@ -40,3 +40,29 @@ publishes or retries. Reconcile ambiguous publication through the original run
 and registry readback before any further mutation. Accept actual registry bytes
 only after signature and provenance verification against the reviewed source
 and trusted workflow identity.
+
+The repository's maintained reviewer route is gpt-reviewer, App 2450500,
+at-gpt-reviewer[bot] (Bot 249028089), independent of the host-user author.
+Installation access does not establish counted approval; verify the exact
+submitted review through GitHub before merging.
+
+The release workflow is manual on main. Its source, archive digest and CI-run
+inputs must identify the same accepted candidate. The release environment must
+be restricted to main before dispatch. publisher_admission is a credential-free
+record of the actually admitted package, repository, workflow, environment,
+actor and mode, with admitted=true and a fresh observedAt. It grants no access.
+Bootstrap mode additionally checks the configured NPM_BOOTSTRAP_TOKEN's actual
+npm identity and namespace owner/admin readback. This secret reference is a
+proposed repository binding; creating or changing it requires admission of the
+supported first-publisher route. An existing HTTP 401 is a stopped access gate,
+never permission to substitute credentials or another account. OIDC cannot
+bootstrap a nonexistent npm package. Its subsequent trust binding is a separate
+read-back transition after initial ownership exists.
+
+An intent artifact is retained before the single publish command. Any prior
+intent with an absent registry version stops publication for original-run
+reconciliation. An already matching version emits readback-only. Neither
+metadata nor this decision verifies registry signatures or provenance: the
+release owner must still verify the actual archive, cryptographic signatures
+and trusted Sigstore/source/workflow identity, run an isolated published
+consumer, and accept cleanup before closing the issue.

@@ -31,7 +31,7 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
-    "checks": "npm run format && npm run lint && npm run typecheck && npm run build && npm test",
+    "checks": "npm run format && npm run lint && npm run typecheck && npm run build && npm test && npm run test:release",
     "test:packed": "node --test tests/packed-consumer.test.mjs",
     "test:release": "node --test scripts/release-artifact.test.mjs"
   },

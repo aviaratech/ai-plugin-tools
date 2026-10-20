@@ -1,0 +1,161 @@
+name: Release
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact qualified main commit
+        required: true
+      archive_sha256:
+        description: Exact reviewed archive SHA256
+        required: true
+      qualification_run_id:
+        description: Successful main CI run retaining the archive and all three consumers
+        required: true
+      publisher_admission:
+        description: Fresh admitted publisher JSON, without credentials
+        required: true
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: ai-plugin-tools-publication
+  cancel-in-progress: false
+env:
+  REVIEWED_SOURCE_SHA: ${{ inputs.source_sha }}
+  RELEASE_VERSION: 0.1.0
+  REVIEWED_ARCHIVE_SHA256: ${{ inputs.archive_sha256 }}
+  QUALIFICATION_RUN: ${{ inputs.qualification_run_id }}
+  REVIEWER_APP_ID: '2450500'
+  REVIEWER_BOT_ID: '249028089'
+jobs:
+  select:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate manual source selection
+        env:
+          CURRENT_SHA: ${{ github.sha }}
+          CURRENT_REF: ${{ github.ref }}
+        run: |
+          node -e "const e=process.env; if(e.CURRENT_REF!=='refs/heads/main'||e.REVIEWED_SOURCE_SHA!==e.CURRENT_SHA||!/^[a-f0-9]{40}$/.test(e.REVIEWED_SOURCE_SHA)||!/^[a-f0-9]{64}$/.test(e.REVIEWED_ARCHIVE_SHA256)||!/^[1-9][0-9]*$/.test(e.QUALIFICATION_RUN)) process.exit(1)"
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.21.0
+      - name: Select the original successful CI artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/aviaratech/ai-plugin-tools/actions/runs/$QUALIFICATION_RUN" > "$RUNNER_TEMP/run.json"
+          node -e "const r=require(process.env.RUNNER_TEMP+'/run.json'); if(r.head_sha!==process.env.REVIEWED_SOURCE_SHA||r.path!=='.github/workflows/ci.yml'||r.event!=='push'||r.head_branch!=='main'||r.status!=='completed'||r.conclusion!=='success') process.exit(1)"
+          gh run download "$QUALIFICATION_RUN" --repo aviaratech/ai-plugin-tools --name candidate --dir "$RUNNER_TEMP/candidate"
+          for version in 24.0.0 24.21.0 26.2.0; do
+            gh run download "$QUALIFICATION_RUN" --repo aviaratech/ai-plugin-tools --name "consumer-$version" --dir "$RUNNER_TEMP/consumer-$version"
+            mkdir "$RUNNER_TEMP/candidate/$version"
+            cp "$RUNNER_TEMP/consumer-$version/consumer.json" "$RUNNER_TEMP/candidate/$version/consumer.json"
+          done
+          node scripts/release-artifact.mjs select "$RUNNER_TEMP/candidate" "$RUNNER_TEMP/selected"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: selected-release
+          path: ${{ runner.temp }}/selected
+          if-no-files-found: error
+  publish:
+    needs: select
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      pull-requests: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.21.0
+          registry-url: https://registry.npmjs.org/
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: selected-release
+          path: ${{ runner.temp }}/selected
+      - name: Gather current provider records
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISHER_ADMISSION: ${{ inputs.publisher_admission }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/provider"
+          cd "$RUNNER_TEMP/provider"
+          node -e "const fs=require('node:fs');const p=JSON.parse(process.env.PUBLISHER_ADMISSION);fs.writeFileSync('publisher.json',JSON.stringify(p));fs.writeFileSync('observation.json',JSON.stringify({repository:'aviaratech/ai-plugin-tools',observedAt:new Date().toISOString()}))"
+          gh api repos/aviaratech/ai-plugin-tools/commits/main > main.json
+          gh api "repos/aviaratech/ai-plugin-tools/commits/$REVIEWED_SOURCE_SHA/pulls" > associations.json
+          jq --arg sha "$REVIEWED_SOURCE_SHA" '[.[] | select(.merged_at != null and .merge_commit_sha == $sha)] | if length == 1 then .[0] else error("ambiguous source PR") end' associations.json > pr.json
+          pr="$(jq -r .number pr.json)"
+          gh api "repos/aviaratech/ai-plugin-tools/pulls/$pr" > pr.json
+          head="$(jq -r .head.sha pr.json)"
+          gh api "repos/aviaratech/ai-plugin-tools/git/commits/$head" > head.json
+          gh api "repos/aviaratech/ai-plugin-tools/pulls/$pr/reviews?per_page=100" --paginate --slurp | jq 'add' > reviews.json
+          gh api graphql -f query='query($n:Int!){repository(owner:"aviaratech",name:"ai-plugin-tools"){pullRequest(number:$n){reviewDecision}}}' -F n="$pr" > review-decision.json
+          gh api apps/at-gpt-reviewer > reviewer-app.json
+          gh api 'users/at-gpt-reviewer[bot]' > reviewer-bot.json
+          gh api repos/aviaratech/ai-plugin-tools/branches/main/protection > protection.json
+          gh api "repos/aviaratech/ai-plugin-tools/commits/$REVIEWED_SOURCE_SHA/check-runs?per_page=100" --paginate --slurp |
+            jq '{check_runs:[.[]|.check_runs[]]}' > checks.json
+          gh api repos/aviaratech/ai-plugin-tools/issues/1 > issue.json
+          gh api 'repos/aviaratech/ai-plugin-tools/actions/artifacts?name=publish-intent-0.1.0&per_page=100' --paginate --slurp |
+            jq '{intents:[.[]|.artifacts[]]}' > publication-history.json
+          code="$(curl --silent --show-error --connect-timeout 15 --output registry-body.json --write-out '%{http_code}' https://registry.npmjs.org/@aviaratech%2fai-plugin-tools/0.1.0)"
+          jq --argjson status "$code" '{statusCode:$status,body:.}' registry-body.json > registry.json
+      - name: Validate the admitted bootstrap identity
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = v24.21.0
+          test "$(npm --version)" = 11.19.0
+          mode="$(node -p "require(process.env.RUNNER_TEMP+'/provider/publisher.json').mode")"
+          if test "$mode" = bootstrap; then
+            test -n "$NODE_AUTH_TOKEN"
+            npm whoami --json > "$RUNNER_TEMP/provider/npm-whoami.json"
+            npm org ls aviaratech --json > "$RUNNER_TEMP/provider/npm-org.json"
+          fi
+      - name: Admit the exact archive once
+        id: admission
+        shell: bash
+        run: |
+          set -euo pipefail
+          decision="$(node scripts/release-artifact.mjs admit "$RUNNER_TEMP/selected" "$RUNNER_TEMP/provider")"
+          echo "decision=$decision" >> "$GITHUB_OUTPUT"
+          if test "$decision" = publish-once; then
+            mkdir "$RUNNER_TEMP/intent"
+            cp "$RUNNER_TEMP/selected/producer.json" "$RUNNER_TEMP/intent/producer.json"
+          fi
+      - name: Retain intent before the single attempt
+        if: steps.admission.outputs.decision == 'publish-once'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: publish-intent-0.1.0
+          path: ${{ runner.temp }}/intent
+          retention-days: 90
+          if-no-files-found: error
+      - name: Publish once
+        if: steps.admission.outputs.decision == 'publish-once'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
+        run: npm publish "$RUNNER_TEMP/selected/aviaratech-ai-plugin-tools-0.1.0.tgz" --access public --provenance --ignore-scripts
+      - name: Preserve admission evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-provider-evidence
+          path: ${{ runner.temp }}/provider
+          if-no-files-found: error
