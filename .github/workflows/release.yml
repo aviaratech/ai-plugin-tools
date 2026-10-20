@@ -68,6 +68,9 @@ jobs:
     needs: select
     runs-on: ubuntu-latest
     environment: release
+    env:
+      NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/npm-oidc-user.npmrc
+      NPM_CONFIG_GLOBALCONFIG: /dev/null
     permissions:
       contents: read
       actions: read
@@ -129,6 +132,7 @@ jobs:
           set -euo pipefail
           test "$(node --version)" = v24.21.0
           test "$(npm --version)" = 11.19.0
+          test "$(npm config get registry --logs-max=0)" = https://registry.npmjs.org/
       - name: Admit the exact archive once
         id: admission
         shell: bash
@@ -150,9 +154,6 @@ jobs:
           if-no-files-found: error
       - name: Publish once
         if: steps.admission.outputs.decision == 'publish-once'
-        env:
-          NPM_CONFIG_USERCONFIG: /dev/null
-          NPM_CONFIG_GLOBALCONFIG: /dev/null
         run: npm publish "$RUNNER_TEMP/selected/aviaratech-ai-plugin-tools-0.1.0.tgz" --registry=https://registry.npmjs.org/ --access public --provenance --ignore-scripts
       - name: Preserve admission evidence
         if: always()

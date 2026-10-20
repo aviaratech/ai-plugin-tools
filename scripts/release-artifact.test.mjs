@@ -390,3 +390,25 @@ test('OIDC admits an absent target only for an existing owned package and exact 
     }
   }
 });
+
+test('publish workflow environment loads npm config before retaining an intent', () => {
+  const root = mkdtempSync(join(tmpdir(), 'ai-plugin-tools-npm-config-'));
+  try {
+    const workflow = readFileSync(resolve('.github/workflows/release.yml'), 'utf8').split('\n  publish:\n')[1];
+    const env = { PATH: process.env.PATH, NPM_CONFIG_CACHE: join(root, 'cache') };
+    for (const key of ['NPM_CONFIG_USERCONFIG', 'NPM_CONFIG_GLOBALCONFIG']) {
+      const matches = [...workflow.matchAll(new RegExp('^ +' + key + ': (.+)$', 'gm'))];
+      assert.equal(matches.length, 1, 'publish config must have one unambiguous value');
+      env[key] = matches[0][1].replaceAll('${{ runner.temp }}', root);
+    }
+    const result = spawnSync('npm', ['config', 'get', 'registry', '--logs-max=0'], {
+      cwd: root,
+      env,
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), 'https://registry.npmjs.org/');
+  } finally {
+    rmSync(root, { recursive: true });
+  }
+});
