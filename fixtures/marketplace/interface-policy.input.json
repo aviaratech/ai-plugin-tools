@@ -1,0 +1,16 @@
+{
+  "marketplaceName": "example-delivery-market",
+  "pluginName": "ai-delivery",
+  "relativeSource": "./versions/0.3.33/plugins/ai-delivery",
+  "version": "0.3.33",
+  "ownerName": "AviaraTech",
+  "metadata": {
+    "kind": "interface-policy",
+    "displayName": "ai-delivery",
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL"
+    },
+    "category": "Productivity"
+  }
+}
