@@ -106,7 +106,12 @@ jobs:
           gh api graphql -f query='query($n:Int!){repository(owner:"aviaratech",name:"ai-plugin-tools"){pullRequest(number:$n){reviewDecision}}}' -F n="$pr" > review-decision.json
           gh api apps/at-gpt-reviewer > reviewer-app.json
           gh api 'users/at-gpt-reviewer[bot]' > reviewer-bot.json
-          gh api repos/aviaratech/ai-plugin-tools/branches/main/protection > protection.json
+          gh api graphql -f query='query{repository(owner:"aviaratech",name:"ai-plugin-tools"){ref(qualifiedName:"refs/heads/main"){branchProtectionRule{requiresStatusChecks requiresStrictStatusChecks requiredStatusCheckContexts requiresApprovingReviews requiredApprovingReviewCount dismissesStaleReviews isAdminEnforced requiresLinearHistory allowsForcePushes allowsDeletions}}}}' > protection-raw.json
+          jq '.data.repository.ref.branchProtectionRule | {
+            required_status_checks:(if .requiresStatusChecks then {strict:.requiresStrictStatusChecks,contexts:.requiredStatusCheckContexts} else null end),
+            required_pull_request_reviews:(if .requiresApprovingReviews then {required_approving_review_count:.requiredApprovingReviewCount,dismiss_stale_reviews:.dismissesStaleReviews} else null end),
+            enforce_admins:{enabled:.isAdminEnforced},required_linear_history:{enabled:.requiresLinearHistory},
+            allow_force_pushes:{enabled:.allowsForcePushes},allow_deletions:{enabled:.allowsDeletions}}' protection-raw.json > protection.json
           gh api "repos/aviaratech/ai-plugin-tools/commits/$REVIEWED_SOURCE_SHA/check-runs?per_page=100" --paginate --slurp |
             jq '{check_runs:[.[]|.check_runs[]]}' > checks.json
           gh api repos/aviaratech/ai-plugin-tools/issues/1 > issue.json
