@@ -12,7 +12,7 @@ on:
         description: Successful main CI run retaining the archive and all three consumers
         required: true
       publisher_admission:
-        description: Fresh admitted publisher JSON, without credentials
+        description: Historical admitted publisher setup JSON, without credentials
         required: true
 permissions:
   contents: read
@@ -27,6 +27,8 @@ env:
   QUALIFICATION_RUN: ${{ inputs.qualification_run_id }}
   REVIEWER_APP_ID: '2450500'
   REVIEWER_BOT_ID: '249028089'
+  REVIEWER_BOT_LOGIN: 'at-gpt-reviewer[bot]'
+  TRUSTED_PUBLISHER_ID: '5921de58-b10a-47a4-9a6a-774b7d935f3c'
 jobs:
   select:
     runs-on: ubuntu-latest
@@ -75,6 +77,7 @@ jobs:
       actions: read
       checks: read
       pull-requests: read
+      issues: read
       id-token: write
     steps:
       - name: Initialize isolated npm configuration
@@ -99,37 +102,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir "$RUNNER_TEMP/provider"
-          cd "$RUNNER_TEMP/provider"
-          node -e "const fs=require('node:fs');const p=JSON.parse(process.env.PUBLISHER_ADMISSION);fs.writeFileSync('publisher.json',JSON.stringify(p));fs.writeFileSync('observation.json',JSON.stringify({repository:'aviaratech/ai-plugin-tools',observedAt:new Date().toISOString()}))"
-          gh api repos/aviaratech/ai-plugin-tools/commits/main > main.json
-          gh api "repos/aviaratech/ai-plugin-tools/commits/$REVIEWED_SOURCE_SHA/pulls" > associations.json
-          jq --arg sha "$REVIEWED_SOURCE_SHA" '[.[] | select(.merged_at != null and .merge_commit_sha == $sha)] | if length == 1 then .[0] else error("ambiguous source PR") end' associations.json > pr.json
-          pr="$(jq -r .number pr.json)"
-          gh api "repos/aviaratech/ai-plugin-tools/pulls/$pr" > pr.json
-          head="$(jq -r .head.sha pr.json)"
-          gh api "repos/aviaratech/ai-plugin-tools/git/commits/$head" > head.json
-          gh api "repos/aviaratech/ai-plugin-tools/pulls/$pr/reviews?per_page=100" --paginate --slurp | jq 'add' > reviews.json
-          gh api graphql -f query='query($n:Int!){repository(owner:"aviaratech",name:"ai-plugin-tools"){pullRequest(number:$n){reviewDecision}}}' -F n="$pr" > review-decision.json
-          gh api apps/at-gpt-reviewer > reviewer-app.json
-          gh api 'users/at-gpt-reviewer[bot]' > reviewer-bot.json
-          review="$(jq --slurpfile bot reviewer-bot.json '[.[] | select(.user.id == $bot[0].id)] | sort_by(.id) | last | .node_id // error("configured App review absent")' reviews.json -r)"
-          gh api graphql -f query='query($id:ID!){node(id:$id){...on PullRequestReview{id fullDatabaseId state authorCanPushToRepository author{login} commit{oid} pullRequest{number headRefOid baseRepository{nameWithOwner}}}}}' -f id="$review" > app-review-eligibility.json
-          gh api graphql -f query='query{repository(owner:"aviaratech",name:"ai-plugin-tools"){ref(qualifiedName:"refs/heads/main"){branchProtectionRule{requiresStatusChecks requiresStrictStatusChecks requiredStatusCheckContexts requiresApprovingReviews requiredApprovingReviewCount dismissesStaleReviews isAdminEnforced requiresLinearHistory allowsForcePushes allowsDeletions}}}}' > protection-raw.json
-          jq '.data.repository.ref.branchProtectionRule | {
-            required_status_checks:(if .requiresStatusChecks then {strict:.requiresStrictStatusChecks,contexts:.requiredStatusCheckContexts} else null end),
-            required_pull_request_reviews:(if .requiresApprovingReviews then {required_approving_review_count:.requiredApprovingReviewCount,dismiss_stale_reviews:.dismissesStaleReviews} else null end),
-            enforce_admins:{enabled:.isAdminEnforced},required_linear_history:{enabled:.requiresLinearHistory},
-            allow_force_pushes:{enabled:.allowsForcePushes},allow_deletions:{enabled:.allowsDeletions}}' protection-raw.json > protection.json
-          gh api "repos/aviaratech/ai-plugin-tools/commits/$REVIEWED_SOURCE_SHA/check-runs?per_page=100" --paginate --slurp |
-            jq '{check_runs:[.[]|.check_runs[]]}' > checks.json
-          gh api repos/aviaratech/ai-plugin-tools/issues/1 > issue.json
-          gh api 'repos/aviaratech/ai-plugin-tools/actions/artifacts?name=publish-intent-0.1.0&per_page=100' --paginate --slurp |
-            jq '{intents:[.[]|.artifacts[]]}' > publication-history.json
-          code="$(curl --silent --show-error --connect-timeout 15 --output package-body.json --write-out '%{http_code}' https://registry.npmjs.org/@aviaratech%2fai-plugin-tools)"
-          jq --argjson status "$code" '{statusCode:$status,body:.}' package-body.json > package-registry.json
-          code="$(curl --silent --show-error --connect-timeout 15 --output registry-body.json --write-out '%{http_code}' https://registry.npmjs.org/@aviaratech%2fai-plugin-tools/0.1.0)"
-          jq --argjson status "$code" '{statusCode:$status,body:.}' registry-body.json > registry.json
+          bash scripts/release-provider.sh "$RUNNER_TEMP/provider"
+          node -e "const fs=require('node:fs');fs.writeFileSync(process.env.RUNNER_TEMP+'/provider/publisher.json',JSON.stringify(JSON.parse(process.env.PUBLISHER_ADMISSION)))"
       - name: Validate the publishing toolchain
         shell: bash
         run: |

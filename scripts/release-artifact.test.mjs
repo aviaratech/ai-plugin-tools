@@ -20,6 +20,8 @@ const environment = () => ({
   REVIEWED_ARCHIVE_SHA256: '',
   REVIEWER_APP_ID: '101',
   REVIEWER_BOT_ID: '202',
+  REVIEWER_BOT_LOGIN: 'independent-review[bot]',
+  TRUSTED_PUBLISHER_ID: 'trusted-config',
 });
 const invoke = (args, env) => spawnSync(process.execPath, [cli, ...args], { env, encoding: 'utf8' });
 
@@ -131,8 +133,6 @@ function fixture() {
       },
     },
   });
-  write(join(providers, 'reviewer-app.json'), { id: 101, slug: 'independent-review' });
-  write(join(providers, 'reviewer-bot.json'), { id: 202, login: 'independent-review[bot]', type: 'Bot' });
   write(join(providers, 'protection.json'), {
     required_status_checks: { strict: true, contexts: ['checks', 'secrets'] },
     required_pull_request_reviews: { required_approving_review_count: 1, dismiss_stale_reviews: true },
@@ -249,10 +249,15 @@ test('admit rejects stale, author-only, dismissed, drifted and unknown provider 
     ['observation.json', (x) => ({ ...x, observedAt: '2000-01-01T00:00:00Z' })],
     ['reviews.json', () => []],
     ['reviews.json', (x) => [{ ...x[0], user: { ...x[0].user, login: 'operator' } }]],
+    ['reviews.json', (x) => [{ ...x[0], user: { ...x[0].user, id: 999 } }]],
+    ['reviews.json', (x) => [{ ...x[0], user: { ...x[0].user, type: 'User' } }]],
     ['reviews.json', (x) => [{ ...x[0], state: 'DISMISSED' }]],
     ['app-review-eligibility.json', (x) => ({ data: { node: { ...x.data.node, authorCanPushToRepository: false } } })],
     ['app-review-eligibility.json', (x) => ({ data: { node: { ...x.data.node, authorCanPushToRepository: null } } })],
     ['app-review-eligibility.json', (x) => ({ data: { node: { ...x.data.node, fullDatabaseId: 99 } } })],
+    ['app-review-eligibility.json', (x) => ({ data: { node: { ...x.data.node, id: 'wrong-node' } } })],
+    ['app-review-eligibility.json', (x) => ({ data: { node: { ...x.data.node, author: { login: 'other' } } } })],
+    ['app-review-eligibility.json', () => ({ data: { node: null }, errors: [{ message: 'denied' }] })],
     [
       'app-review-eligibility.json',
       (x) => ({ data: { node: { ...x.data.node, pullRequest: { ...x.data.node.pullRequest, number: 3 } } } }),
@@ -292,6 +297,69 @@ test('another maintainer approval cannot make the configured App approval count'
     const result = invoke(['admit', f.candidate, f.providers], f.env);
     assert.notEqual(result.status, 0, 'aggregate APPROVED cannot substitute for counted App eligibility');
     assert.match(result.stderr, /configured App approval does not count/);
+  } finally {
+    rmSync(f.root, { recursive: true });
+  }
+});
+
+test('configured counted review is sufficient without App-directory responses', () => {
+  const f = fixture();
+  try {
+    rmSync(join(f.providers, 'reviewer-app.json'), { force: true });
+    rmSync(join(f.providers, 'reviewer-bot.json'), { force: true });
+    const result = invoke(['admit', f.candidate, f.providers], f.env);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), 'publish-once');
+    const mismatch = invoke(['admit', f.candidate, f.providers], {
+      ...f.env,
+      REVIEWER_BOT_LOGIN: 'another-reviewer[bot]',
+    });
+    assert.notEqual(mismatch.status, 0, 'configured login must match the actual review');
+  } finally {
+    rmSync(f.root, { recursive: true });
+  }
+});
+
+test('historical setup uses the exact saved trust while live observations remain fresh', () => {
+  const cases = [
+    { accepted: true, change: () => {} },
+    { accepted: false, change: (x) => (x.trust.id = 'another-saved-config') },
+    { accepted: false, change: (x) => (x.trustObservedAt = 'not-a-date') },
+    { accepted: false, change: (x) => (x.observedAt = null) },
+    { accepted: false, change: (x) => (x.trustObservedAt = '2999-01-01T00:00:00Z') },
+    { accepted: false, change: (x) => (x.observedAt = '2999-01-01T00:00:00Z') },
+  ];
+  for (const [index, { accepted, change }] of cases.entries()) {
+    const f = fixture();
+    try {
+      const publisher = read(join(f.providers, 'publisher.json'));
+      publisher.observedAt = publisher.trustObservedAt = '2026-01-01T00:00:00Z';
+      change(publisher);
+      write(join(f.providers, 'publisher.json'), publisher);
+      const result = invoke(['admit', f.candidate, f.providers], f.env);
+      assert.equal(result.status === 0, accepted, 'historical setup case ' + index + ': ' + result.stderr);
+      assert.equal(result.stdout.trim() === 'publish-once', accepted);
+      if (accepted) {
+        write(join(f.providers, 'observation.json'), {
+          repository: f.producer.repository,
+          observedAt: '2026-01-01T00:00:00Z',
+        });
+        assert.notEqual(invoke(['admit', f.candidate, f.providers], f.env).status, 0, 'stale live read must stop');
+      }
+    } finally {
+      rmSync(f.root, { recursive: true });
+    }
+  }
+});
+
+test('an otherwise valid publisher cannot substitute another saved trust configuration', () => {
+  const f = fixture();
+  try {
+    const publisher = read(join(f.providers, 'publisher.json'));
+    publisher.trust.id = 'another-saved-config';
+    write(join(f.providers, 'publisher.json'), publisher);
+    const result = invoke(['admit', f.candidate, f.providers], f.env);
+    assert.notEqual(result.status, 0, 'another nonempty configuration ID must not be admitted');
   } finally {
     rmSync(f.root, { recursive: true });
   }
@@ -361,8 +429,8 @@ test('OIDC admits an absent target only for an existing owned package and exact 
       (x) => ({ ...x, mode: 'bootstrap' }),
       (x) => ({ ...x, actor: 'other-owner' }),
       (x) => ({ ...x, trust: undefined }),
-      (x) => ({ ...x, trustObservedAt: '2000-01-01T00:00:00Z' }),
-      (x) => ({ ...x, observedAt: '2000-01-01T00:00:00Z' }),
+      (x) => ({ ...x, trustObservedAt: 'invalid' }),
+      (x) => ({ ...x, observedAt: 'invalid' }),
       ...[
         { id: '' },
         { type: 'gitlab' },

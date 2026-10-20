@@ -50,22 +50,44 @@ The repository's maintained reviewer route is gpt-reviewer, App 2450500,
 at-gpt-reviewer[bot] (Bot 249028089), independent of the host-user author.
 Installation access does not establish counted approval; verify the exact
 submitted review through GitHub before merging.
+The reviewed workflow owns the explicit App/Bot/login mapping. Validate the
+actual REST Bot ID, login and type, review ID and node ID, exact head/PR/repository,
+author independence, current approval, GraphQL counted eligibility and aggregate
+required approval. App-directory access is not an available Actions-token proof.
+The live review establishes the configured Bot's approval; it does not independently
+attest the App-directory mapping.
 
 The release workflow is manual on main. Its source, archive digest and CI-run
 inputs must identify the same accepted candidate. The release environment must
 be restricted to main before dispatch. publisher_admission is a credential-free
 record of the actually admitted package, repository, workflow, environment,
-actor and mode, with admitted=true and a fresh observedAt. It grants no access.
+actor and mode, with admitted=true and its original historical observedAt. It grants no access.
 Only OIDC mode is accepted. The provider evidence contains separate canonical
 package-root and target-version responses: an absent target version does not
 mean package ownership is absent. The root response must identify this package
 and the admitted personal namespace owner `aviaratech` among its maintainers.
 The admission also carries the actual `npm trust list --json` record as `trust`
-and its fresh `trustObservedAt`: a nonempty configuration ID, GitHub provider,
+and its original historical `trustObservedAt`: the exact configuration ID pinned
+by `TRUSTED_PUBLISHER_ID`, GitHub provider,
 repository, `release.yml`, `release` environment and `createPackage` permission
-must match. This credential-free readback is admission evidence; actual OIDC
-publishing still proves access. No npm account token or GitHub npm secret is
+must match. Historical timestamps must be valid and nonfuture; do not restamp them
+as a new authenticated read. Fresh live GitHub and registry evidence must remain
+under five minutes old. This credential-free setup record is historical admission
+evidence; actual OIDC publishing proves current access. The setup account may be
+revoked and is not current publishing authorization. OIDC does not independently
+prove that an identical trust tuple was never deleted and recreated. Preserve
+stops for known trust changes, access refusal or expiry, and do not infer provider
+creation/expiry times from local observations. No npm account token or GitHub npm secret is
 used by the release workflow, and an OIDC refusal has no credential fallback.
+
+Both release and the existing CI checks job use `scripts/release-provider.sh`.
+CI has repository read permissions only: no OIDC, npm command, publisher admission
+or publication intent. Collection is not release admission and may observe its
+own checks still running. Preserve the original outputs and enclosing CI result;
+independent review must inspect every request, including GraphQL errors/nulls and
+complete review/protection bindings. The observation identifies the executing
+collector commit/tree/digest separately from the main source whose records were
+collected. Never relabel existing-main observations as new-source qualification.
 
 First ownership is established separately through an explicitly approved local
 browser-authenticated CLI publication of the real library at `0.0.0`, tagged
