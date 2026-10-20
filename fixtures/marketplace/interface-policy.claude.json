@@ -1,0 +1,13 @@
+{
+  "name": "example-delivery-market",
+  "owner": {
+    "name": "AviaraTech"
+  },
+  "plugins": [
+    {
+      "name": "ai-delivery",
+      "source": "./versions/0.3.33/plugins/ai-delivery",
+      "version": "0.3.33"
+    }
+  ]
+}

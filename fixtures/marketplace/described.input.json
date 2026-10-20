@@ -1,0 +1,11 @@
+{
+  "marketplaceName": "example-memory-market",
+  "pluginName": "ai-memory",
+  "relativeSource": "./versions/0.2.6/example-digest/plugin",
+  "version": "0.2.6",
+  "ownerName": "AviaraTech",
+  "metadata": {
+    "kind": "described",
+    "description": "Durable local PostgreSQL memory plugin"
+  }
+}

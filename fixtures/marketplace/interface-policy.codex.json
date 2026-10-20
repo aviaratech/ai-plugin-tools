@@ -1,0 +1,20 @@
+{
+  "name": "example-delivery-market",
+  "interface": {
+    "displayName": "ai-delivery"
+  },
+  "plugins": [
+    {
+      "name": "ai-delivery",
+      "source": {
+        "source": "local",
+        "path": "./versions/0.3.33/plugins/ai-delivery"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

@@ -1,0 +1,154 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan source and history
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location --connect-timeout 15 https://github.com/gitleaks/gitleaks/releases/download/v8.30.0/gitleaks_8.30.0_linux_x64.tar.gz -o gitleaks.tgz
+          echo '79a3ab579b53f71efd634f3aaf7e04a0fa0cf206b7ed434638d1547a2470a66e  gitleaks.tgz' | sha256sum -c -
+          tar -xzf gitleaks.tgz gitleaks
+          ./gitleaks git "$GITHUB_WORKSPACE" --redact --report-format json --report-path "$RUNNER_TEMP/secrets.json"
+          git -C "$GITHUB_WORKSPACE" rev-parse HEAD > "$RUNNER_TEMP/secrets-source"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: source-secrets
+          path: |
+            ${{ runner.temp }}/secrets.json
+            ${{ runner.temp }}/secrets-source
+  producer:
+    needs: secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.21.0
+          cache: npm
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: source-secrets
+          path: ${{ runner.temp }}/scan
+      - name: Check and pack once
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = v24.21.0
+          test "$(npm --version)" = 11.19.0
+          test "$(cat "$RUNNER_TEMP/scan/secrets-source")" = "$(git rev-parse HEAD)"
+          npm ci --ignore-scripts --no-audit --no-fund
+          mkdir "$RUNNER_TEMP/candidate"
+          npm run checks > "$RUNNER_TEMP/candidate/checks.log" 2>&1
+          test -z "$(git status --porcelain)"
+          npm pack --ignore-scripts --json --pack-destination "$RUNNER_TEMP/candidate" > "$RUNNER_TEMP/pack.json"
+          cp package-lock.json "$RUNNER_TEMP/candidate/source-lock.json"
+          cp "$RUNNER_TEMP/scan/secrets.json" "$RUNNER_TEMP/candidate/secrets.json"
+          node --input-type=module <<'JS'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+          import { execFileSync } from 'node:child_process';
+          import { join } from 'node:path';
+          const root = join(process.env.RUNNER_TEMP, 'candidate');
+          const sha = file => createHash('sha256').update(readFileSync(file)).digest('hex');
+          const pack = JSON.parse(readFileSync(join(process.env.RUNNER_TEMP, 'pack.json')))[0];
+          const git = arg => execFileSync('git', ['rev-parse', arg], {encoding:'utf8'}).trim();
+          writeFileSync(join(root, 'producer.json'), JSON.stringify({
+            schemaVersion:1, repository:'aviaratech/ai-plugin-tools', version:'0.1.0',
+            sourceSha:git('HEAD'), sourceTree:git('HEAD^{tree}'), lockSHA256:sha('package-lock.json'),
+            archiveName:pack.filename, archiveSHA256:sha(join(root,pack.filename)), archiveIntegrity:pack.integrity,
+            consumerSHA256:sha('tests/packed-consumer.test.mjs'), typeFixtureSHA256:sha('tests/fixtures/type-consumer.ts'),
+            toolchain:{node:process.version,npm:'11.19.0'},
+            checks:{exitCode:0,logSHA256:sha(join(root,'checks.log'))},
+            secrets:{exitCode:0,reportSHA256:sha(join(root,'secrets.json'))}
+          },null,2)+'\n');
+          JS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: candidate
+          path: ${{ runner.temp }}/candidate
+          if-no-files-found: error
+  consumer:
+    needs: producer
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [24.0.0, 24.21.0, 26.2.0]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.21.0
+          cache: npm
+      - name: Admit locked type controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = v24.21.0
+          test "$(npm --version)" = 11.19.0
+          npm ci --ignore-scripts --no-audit --no-fund
+          echo "AI_PLUGIN_TOOLS_CONTROLLER=$(command -v node)" >> "$GITHUB_ENV"
+          echo "AI_PLUGIN_TOOLS_NPM_CLI=$(node -p 'require("node:fs").realpathSync(process.argv[1])' "$(command -v npm)")" >> "$GITHUB_ENV"
+          echo "AI_PLUGIN_TOOLS_TYPESCRIPT=$GITHUB_WORKSPACE/node_modules/typescript/bin/tsc" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: candidate
+          path: ${{ runner.temp }}/candidate
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Qualify retained archive
+        env:
+          AI_PLUGIN_TOOLS_ARCHIVE: ${{ runner.temp }}/candidate/aviaratech-ai-plugin-tools-0.1.0.tgz
+          AI_PLUGIN_TOOLS_RESULTS: ${{ runner.temp }}/consumer
+          AI_PLUGIN_TOOLS_EXPECTED_NODE: v${{ matrix.node }}
+        run: |
+          status=0
+          node --test tests/packed-consumer.test.mjs || status=$?
+          export AI_PLUGIN_TOOLS_SUITE_STATUS="$status"
+          node --input-type=module <<'JS'
+          import {existsSync,mkdirSync,readFileSync,writeFileSync} from 'node:fs';
+          import {join} from 'node:path';
+          const root=process.env.AI_PLUGIN_TOOLS_RESULTS;
+          mkdirSync(root,{recursive:true,mode:0o700});
+          const receipt=join(root,'consumer.json');
+          writeFileSync(join(root,'execution.json'),JSON.stringify({
+            exitCode:Number(process.env.AI_PLUGIN_TOOLS_SUITE_STATUS),
+            identity:existsSync(receipt)?JSON.parse(readFileSync(receipt)).identity:null
+          },null,2)+'\n');
+          JS
+          exit "$status"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: consumer-${{ matrix.node }}
+          path: ${{ runner.temp }}/consumer
+          if-no-files-found: error
+  checks:
+    if: always()
+    needs: [secrets, producer, consumer]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all runtime and source gates
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          node -e "const n=JSON.parse(process.env.RESULTS); if(!Object.values(n).every(x=>x.result==='success')) process.exit(1)"

@@ -1,0 +1,50 @@
+{
+  "name": "@aviaratech/ai-plugin-tools",
+  "version": "0.1.0",
+  "description": "Pure marketplace document and native plugin argument compatibility helpers.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aviaratech/ai-plugin-tools.git"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "format": "oxfmt --check .",
+    "lint": "oxlint --type-aware src",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "checks": "npm run format && npm run lint && npm run typecheck && npm run build && npm test && npm run test:release",
+    "test:packed": "node --test tests/packed-consumer.test.mjs",
+    "test:release": "node --test scripts/release-artifact.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "25.9.1",
+    "oxfmt": "0.70.0",
+    "oxlint": "1.85.0",
+    "oxlint-tsgolint": "7.0.2003",
+    "typescript": "6.0.2",
+    "vitest": "5.0.1"
+  },
+  "engines": {
+    "node": ">=24 <25 || 26.2.0"
+  },
+  "packageManager": "npm@11.19.0"
+}
